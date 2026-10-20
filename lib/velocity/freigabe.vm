@@ -5,88 +5,179 @@
   &raquo; <a href="freigabe.html">Zahlungsfreigabe</a>
 </div>
 
-#set($token = $c.getToken())
-#set($pending = $c.getPending())
+<div id="msg" class="note" style="display:none"></div>
 
-#if($c.isRunning() || $pending)
-<script type="text/javascript">
-  // Waehrend der Ausfuehrung neu laden, damit die VoP-Abfrage sofort erscheint
-  window.setTimeout(function() { window.location.href = "freigabe.html"; }, 3000);
-</script>
-#end
-
-#if($pending)
+<div id="vop" style="display:none">
   <h2>Namensabgleich des Empf&auml;ngers &ndash; Entscheidung erforderlich</h2>
   <div class="note" style="border:1px dotted #800000;background-color: #F7E7E0">
-    Ohne Entscheidung wird der Auftrag um $format.getLongDatum($pending.deadline) abgelehnt.
-    #if($pending.auftrag)<br/>Auftrag: $format.escape($pending.auftrag)#end
-    #if($pending.text)<br/>Text der Bank: $format.escape($pending.text)#end
+    Ohne Entscheidung wird der Auftrag um <span id="vop-deadline"></span> abgelehnt.
+    <span id="vop-auftrag"></span>
+    <span id="vop-text"></span>
   </div>
   <table class="data">
-    <tr>
-      <th>Ergebnis</th>
-      <th>Angegebener Name</th>
-      <th>Name laut Bank</th>
-      <th>IBAN</th>
-      <th style="text-align:right">Betrag</th>
-      <th>Verwendungszweck</th>
-    </tr>
-    #foreach($i in $pending.items)
+    <thead>
       <tr>
-        <td>#if($i.status)$format.escape($i.status.description)#end</td>
-        <td>$format.escape($i.original)</td>
-        <td>$format.escape($i.name)</td>
-        <td>$format.escape($i.iban)</td>
-        <td style="text-align:right">#if($i.amount)$format.escape($i.amount)#end</td>
-        <td>$format.escape($i.usage)</td>
+        <th>Ergebnis</th>
+        <th>Angegebener Name</th>
+        <th>Name laut Bank</th>
+        <th>IBAN</th>
+        <th style="text-align:right">Betrag</th>
+        <th>Verwendungszweck</th>
       </tr>
-    #end
+    </thead>
+    <tbody id="vop-items"></tbody>
   </table>
-  <form method="post" action="freigabe.html" style="margin-top:10px">
-    <input type="hidden" name="token" value="$token">
-    <input type="hidden" name="vop" value="$pending.id">
-    <button type="submit" name="action" value="approve">Auftrag dennoch ausf&uuml;hren</button>
-    <button type="submit" name="action" value="reject">Abbrechen</button>
-  </form>
-#end
+  <div style="margin-top:10px">
+    <button type="button" onclick="freigabe.decide('approve')">Auftrag dennoch ausf&uuml;hren</button>
+    <button type="button" onclick="freigabe.decide('reject')">Abbrechen</button>
+  </div>
+</div>
 
 <h2>F&auml;llige SEPA-&Uuml;berweisungen</h2>
 
-#if($c.isRunning())
-  <div class="note"><b>Ausf&uuml;hrung l&auml;uft.</b> Bei einer Push-Freigabe bitte in SecureGo plus best&auml;tigen.</div>
-#end
+<div id="running" class="note" style="display:none"><b>Ausf&uuml;hrung l&auml;uft.</b> Bei einer Push-Freigabe bitte in SecureGo plus best&auml;tigen.</div>
 
-<form method="post" action="freigabe.html">
-  <input type="hidden" name="token" value="$token">
-  <table class="data">
+<table class="data">
+  <thead>
     <tr>
-      <th><input type="checkbox" title="Alle ausw&auml;hlen" onclick="var b = this.checked; document.querySelectorAll('input[name=id]').forEach(function(c) { c.checked = b; });"></th>
+      <th><input type="checkbox" id="all" title="Alle ausw&auml;hlen" onclick="freigabe.selectAll(this.checked)"></th>
       <th>Termin</th>
       <th>Empf&auml;nger</th>
       <th>IBAN</th>
       <th style="text-align:right">Betrag</th>
       <th>Verwendungszweck</th>
     </tr>
-    #foreach($u in $c.getUeberweisungen())
-      <tr>
-        <td><input type="checkbox" name="id" value="$u.ID"></td>
-        <td>$format.getDatum($u.termin)</td>
-        <td>$format.escape($u.gegenkontoName)</td>
-        <td>$format.escape($u.gegenkontoNummer)</td>
-        <td style="text-align:right">$format.getBetrag($u.betrag)</td>
-        <td>$format.escape($u.zweck)</td>
-      </tr>
-    #end
-  </table>
-  <div style="margin-top:10px">
-    #if(!$c.isRunning())
-      <button type="submit" name="action" value="execute" onclick="return window.confirm('Ausgew&auml;hlte &Uuml;berweisungen jetzt an die Bank senden?')">Ausgew&auml;hlte &Uuml;berweisungen ausf&uuml;hren</button>
-    #end
-  </div>
-</form>
+  </thead>
+  <tbody id="transfers"><tr><td colspan="6">Lade ...</td></tr></tbody>
+</table>
+<div style="margin-top:10px">
+  <button type="button" id="execute" onclick="freigabe.execute()">Ausgew&auml;hlte &Uuml;berweisungen ausf&uuml;hren</button>
+</div>
 
 <div style="margin-top:20px">
   #parse("includes/log.vm")
 </div>
+
+<script type="text/javascript">
+var freigabe = (function()
+{
+  var token   = "$c.getToken()";
+  var vopId   = null;
+  var lastList = null;
+  var busy    = false;
+
+  function el(id) { return document.getElementById(id); }
+
+  // Zeile aus Textwerten bauen; textContent verhindert XSS aus Bank- oder DB-Texten
+  function row(values, rightCol)
+  {
+    var tr = document.createElement("tr");
+    values.forEach(function(v, i)
+    {
+      var td = document.createElement("td");
+      if (v instanceof Node) td.appendChild(v); else td.textContent = v;
+      if (i == rightCol) td.style.textAlign = "right";
+      tr.appendChild(td);
+    });
+    return tr;
+  }
+
+  function message(text, ok)
+  {
+    var m = el("msg");
+    m.textContent = text;
+    m.style.color = ok ? "" : "#800000";
+    m.style.display = text ? "" : "none";
+  }
+
+  function post(params)
+  {
+    var body = new URLSearchParams(params);
+    body.append("token", token);
+    return fetch("freigabe.html", {method: "POST", body: body, credentials: "same-origin"})
+      .then(function(r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function(res) { message(res.text, res.ok); refresh(); })
+      .catch(function(e) { message("Fehler: " + e.message, false); });
+  }
+
+  function render(s)
+  {
+    el("running").style.display = s.running ? "" : "none";
+    el("execute").style.display = s.running ? "none" : "";
+
+    var p = s.pending;
+    el("vop").style.display = p ? "" : "none";
+    vopId = p ? p.id : null;
+    if (p)
+    {
+      el("vop-deadline").textContent = p.deadline;
+      el("vop-auftrag").textContent = p.auftrag ? "Auftrag: " + p.auftrag : "";
+      el("vop-text").textContent = p.text ? " Text der Bank: " + p.text : "";
+      var items = el("vop-items");
+      items.innerHTML = "";
+      p.items.forEach(function(i) { items.appendChild(row([i.status, i.original, i.name, i.iban, i.amount, i.usage], 4)); });
+    }
+
+    // Tabelle nur neu aufbauen, wenn sich die Liste geaendert hat; Auswahl bleibt erhalten
+    var list = JSON.stringify(s.transfers);
+    if (list == lastList)
+      return;
+    lastList = list;
+    var checked = {};
+    document.querySelectorAll("input[name=id]:checked").forEach(function(c) { checked[c.value] = true; });
+    var body = el("transfers");
+    body.innerHTML = "";
+    if (s.transfers.length == 0)
+      body.appendChild(row(["", "Keine f\u00e4lligen \u00dcberweisungen", "", "", "", ""], -1));
+    s.transfers.forEach(function(u)
+    {
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.name = "id";
+      cb.value = u.id;
+      cb.checked = !!checked[u.id];
+      body.appendChild(row([cb, u.termin, u.name, u.iban, u.betrag, u.zweck], 4));
+    });
+    el("all").checked = false;
+  }
+
+  function refresh()
+  {
+    if (busy)
+      return;
+    busy = true;
+    fetch("freigabe.html?action=status", {credentials: "same-origin", cache: "no-store"})
+      .then(function(r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(render)
+      .catch(function(e) { message("Status nicht abrufbar: " + e.message, false); })
+      .then(function() { busy = false; });
+  }
+
+  refresh();
+  window.setInterval(refresh, 3000);
+
+  return {
+    selectAll: function(b)
+    {
+      document.querySelectorAll("input[name=id]").forEach(function(c) { c.checked = b; });
+    },
+    execute: function()
+    {
+      var ids = [];
+      document.querySelectorAll("input[name=id]:checked").forEach(function(c) { ids.push(["id", c.value]); });
+      if (ids.length == 0) { message("Keine \u00dcberweisung ausgew\u00e4hlt", false); return; }
+      if (!window.confirm(ids.length + " \u00dcberweisung(en) jetzt an die Bank senden?"))
+        return;
+      ids.push(["action", "execute"]);
+      post(ids);
+    },
+    decide: function(action)
+    {
+      if (vopId)
+        post([["action", action], ["vop", vopId]]);
+    }
+  };
+})();
+</script>
 
 #parse("includes/footer.vm")

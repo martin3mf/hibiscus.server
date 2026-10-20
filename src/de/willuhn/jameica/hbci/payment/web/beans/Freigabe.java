@@ -24,6 +24,10 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.kapott.hbci.GV_Result.GVRVoP.VoPResultItem;
+
 import de.willuhn.datasource.rmi.DBIterator;
 import de.willuhn.jameica.hbci.Settings;
 import de.willuhn.jameica.hbci.payment.Freigaben;
@@ -33,7 +37,6 @@ import de.willuhn.jameica.hbci.synchronize.SynchronizeBackend;
 import de.willuhn.jameica.hbci.synchronize.SynchronizeEngine;
 import de.willuhn.jameica.hbci.synchronize.jobs.SynchronizeJob;
 import de.willuhn.jameica.hbci.synchronize.jobs.SynchronizeJobSepaUeberweisung;
-import de.willuhn.jameica.messaging.StatusBarMessage;
 import de.willuhn.jameica.services.BeanService;
 import de.willuhn.jameica.system.Application;
 import de.willuhn.jameica.webadmin.annotation.Request;
@@ -109,6 +112,53 @@ public class Freigabe
   }
 
   /**
+   * AJAX: liefert Laufstatus, offene VoP-Entscheidung und faellige Ueberweisungen als JSON.
+   * @throws Exception
+   */
+  public void status() throws Exception
+  {
+    final Format f = new Format();
+    final JSONObject json = new JSONObject();
+    json.put("running",this.isRunning());
+
+    final Freigaben.Entscheidung e = this.getPending();
+    if (e != null)
+    {
+      final JSONArray items = new JSONArray();
+      for (VoPResultItem i:e.getItems())
+      {
+        items.put(new JSONObject()
+          .put("status",i.getStatus() != null ? i.getStatus().getDescription() : "")
+          .put("original",str(i.getOriginal()))
+          .put("name",str(i.getName()))
+          .put("iban",str(i.getIban()))
+          .put("amount",i.getAmount() != null ? i.getAmount().toPlainString() : "")
+          .put("usage",str(i.getUsage())));
+      }
+      json.put("pending",new JSONObject()
+        .put("id",e.getId())
+        .put("deadline",f.getLongDatum(e.getDeadline()))
+        .put("auftrag",str(e.getAuftrag()))
+        .put("text",str(e.getText()))
+        .put("items",items));
+    }
+
+    final JSONArray list = new JSONArray();
+    for (AuslandsUeberweisung u:this.getUeberweisungen())
+    {
+      list.put(new JSONObject()
+        .put("id",u.getID())
+        .put("termin",f.getDatum(u.getTermin()))
+        .put("name",str(u.getGegenkontoName()))
+        .put("iban",str(u.getGegenkontoNummer()))
+        .put("betrag",f.getBetrag(u.getBetrag()))
+        .put("zweck",str(u.getZweck())));
+    }
+    json.put("transfers",list);
+    this.send(json);
+  }
+
+  /**
    * Fuehrt die ausgewaehlten faelligen Ueberweisungen aus.
    * @throws Exception
    */
@@ -165,13 +215,12 @@ public class Freigabe
           e.getKey().execute(e.getValue());
         }
       }
-      Application.getMessagingFactory().sendMessage(new StatusBarMessage(i18n.tr("Ausf\u00fchrung gestartet"),StatusBarMessage.TYPE_SUCCESS));
+      this.send(result(true,i18n.tr("Ausf\u00fchrung gestartet")));
     }
     catch (ApplicationException ae)
     {
-      Application.getMessagingFactory().sendMessage(new StatusBarMessage(ae.getMessage(),StatusBarMessage.TYPE_ERROR));
+      this.send(result(false,ae.getMessage()));
     }
-    this.response.sendRedirect("freigabe.html");
   }
 
   /**
@@ -205,13 +254,12 @@ public class Freigabe
       if (!Freigaben.decide(this.request.getParameter("vop"),approve))
         throw new ApplicationException(i18n.tr("Die Entscheidung ist nicht mehr offen"));
       Logger.info("VoP decision in web frontend: " + (approve ? "approved" : "rejected"));
-      Application.getMessagingFactory().sendMessage(new StatusBarMessage(approve ? i18n.tr("Auftrag freigegeben") : i18n.tr("Auftrag abgelehnt"),StatusBarMessage.TYPE_SUCCESS));
+      this.send(result(true,approve ? i18n.tr("Auftrag freigegeben") : i18n.tr("Auftrag abgelehnt")));
     }
     catch (ApplicationException ae)
     {
-      Application.getMessagingFactory().sendMessage(new StatusBarMessage(ae.getMessage(),StatusBarMessage.TYPE_ERROR));
+      this.send(result(false,ae.getMessage()));
     }
-    this.response.sendRedirect("freigabe.html");
   }
 
   /**
@@ -226,5 +274,37 @@ public class Freigabe
     if (!"POST".equals(this.request.getMethod()) || expected == null || given == null ||
         !MessageDigest.isEqual(expected.getBytes(),given.getBytes()))
       throw new ApplicationException(i18n.tr("Ung\u00fcltige Anfrage"));
+  }
+
+  /**
+   * Schreibt die JSON-Antwort. Danach rendert der FrontController kein Template mehr (Response committed).
+   * @param json die Antwort.
+   * @throws Exception
+   */
+  private void send(JSONObject json) throws Exception
+  {
+    this.response.setContentType("application/json; charset=UTF-8");
+    this.response.setHeader("Cache-Control","no-store");
+    this.response.getWriter().write(json.toString());
+    this.response.flushBuffer();
+  }
+
+  /**
+   * @param ok true bei Erfolg.
+   * @param text Meldung.
+   * @return Ergebnis einer Aktion als JSON.
+   */
+  private static JSONObject result(boolean ok, String text)
+  {
+    return new JSONObject().put("ok",ok).put("text",text);
+  }
+
+  /**
+   * @param s String oder null.
+   * @return der String oder "".
+   */
+  private static String str(String s)
+  {
+    return s != null ? s : "";
   }
 }
