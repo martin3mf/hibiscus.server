@@ -24,7 +24,6 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 
-import de.willuhn.datasource.pseudo.PseudoIterator;
 import de.willuhn.datasource.rmi.DBIterator;
 import de.willuhn.jameica.hbci.Settings;
 import de.willuhn.jameica.hbci.payment.Freigaben;
@@ -58,8 +57,8 @@ public class Freigabe
   private HttpServletResponse response = null;
 
   /**
-   * Liefert alle noch nicht ausgefuehrten SEPA-Ueberweisungen.
-   * @return Liste der offenen Ueberweisungen.
+   * Liefert alle faelligen, noch nicht ausgefuehrten SEPA-Ueberweisungen.
+   * @return Liste der faelligen Ueberweisungen.
    * @throws Exception
    */
   public List<AuslandsUeberweisung> getUeberweisungen() throws Exception
@@ -67,7 +66,14 @@ public class Freigabe
     DBIterator list = Settings.getDBService().createList(AuslandsUeberweisung.class);
     list.addFilter("(ausgefuehrt is null or ausgefuehrt = 0)");
     list.setOrder("order by termin, id");
-    return PseudoIterator.asList(list);
+    final List<AuslandsUeberweisung> result = new ArrayList<>();
+    while (list.hasNext())
+    {
+      final AuslandsUeberweisung u = (AuslandsUeberweisung) list.next();
+      if (u.ueberfaellig())
+        result.add(u);
+    }
+    return result;
   }
 
   /**

@@ -50,7 +50,7 @@
   </form>
 #end
 
-<h2>Offene SEPA-&Uuml;berweisungen</h2>
+<h2>F&auml;llige SEPA-&Uuml;berweisungen</h2>
 
 #if($c.isRunning())
   <div class="note"><b>Ausf&uuml;hrung l&auml;uft.</b> Bei einer Push-Freigabe bitte in SecureGo plus best&auml;tigen.</div>
@@ -69,7 +69,7 @@
     </tr>
     #foreach($u in $c.getUeberweisungen())
       <tr>
-        <td>#if($u.ueberfaellig())<input type="checkbox" name="id" value="$u.ID">#end</td>
+        <td><input type="checkbox" name="id" value="$u.ID"></td>
         <td>$format.getDatum($u.termin)</td>
         <td>$format.escape($u.gegenkontoName)</td>
         <td>$format.escape($u.gegenkontoNummer)</td>
@@ -83,7 +83,6 @@
       <button type="submit" name="action" value="execute" onclick="return window.confirm('Ausgew&auml;hlte &Uuml;berweisungen jetzt an die Bank senden?')">Ausgew&auml;hlte &Uuml;berweisungen ausf&uuml;hren</button>
     #end
   </div>
-  <div class="note">Nur f&auml;llige &Uuml;berweisungen sind ausw&auml;hlbar.</div>
 </form>
 
 <div style="margin-top:20px">
