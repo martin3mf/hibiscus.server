@@ -60,7 +60,7 @@
   <input type="hidden" name="token" value="$token">
   <table class="data">
     <tr>
-      <th></th>
+      <th><input type="checkbox" title="Alle ausw&auml;hlen" onclick="var b = this.checked; document.querySelectorAll('input[name=id]').forEach(function(c) { c.checked = b; });"></th>
       <th>Termin</th>
       <th>Empf&auml;nger</th>
       <th>IBAN</th>
