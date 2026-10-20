@@ -141,6 +141,9 @@ public class Freigaben
           }
           e.wait(Math.max(1L,left / 1000000L));
         }
+        // Unterbrechung gewinnt immer gegen eine gleichzeitige Freigabe
+        if (Thread.currentThread().isInterrupted())
+          e.approved = Boolean.FALSE;
         return Boolean.TRUE.equals(e.approved);
       }
     }

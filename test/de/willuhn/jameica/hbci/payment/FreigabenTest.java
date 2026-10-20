@@ -50,6 +50,20 @@ public class FreigabenTest
     check(!Freigaben.decide(pending.getId(),true), "late approval refused");
     check(!late.get(), "late approval does not flip timeout");
 
+    // Interrupt and approval at the same time: interrupt wins (monitor held so both land before the waiter wakes)
+    final boolean[] got = new boolean[1];
+    Thread waiter = new Thread(() -> got[0] = Freigaben.await(result(VoPStatus.NO_MATCH),"t","j",10));
+    waiter.start();
+    waitPending();
+    Freigaben.Entscheidung race = Freigaben.getPending();
+    synchronized (race)
+    {
+      waiter.interrupt();
+      check(Freigaben.decide(race.getId(),true), "approval accepted before waiter wakes");
+    }
+    waiter.join(5000);
+    check(!waiter.isAlive() && !got[0], "interrupt beats concurrent approval");
+
     System.out.println("FreigabenTest: OK");
   }
 
