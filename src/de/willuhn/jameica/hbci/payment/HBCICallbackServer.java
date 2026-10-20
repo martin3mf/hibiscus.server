@@ -18,6 +18,7 @@ import java.util.Date;
 import javax.annotation.Resource;
 
 import org.apache.commons.lang.StringUtils;
+import org.kapott.hbci.GV_Result.GVRVoP.VoPResult;
 import org.kapott.hbci.callback.HBCICallback;
 import org.kapott.hbci.callback.HBCICallbackConsole;
 import org.kapott.hbci.exceptions.HBCI_Exception;
@@ -345,8 +346,21 @@ public class HBCICallbackServer extends AbstractHibiscusHBCICallback
         return;
         
       case HAVE_VOP_RESULT:
-        final boolean approve = Settings.isVoPApprove();
-        Logger.info("have VoP result: auto approve: " + approve);
+        final VoPResult vop = (VoPResult) ((AbstractHBCIPassport)passport).getPersistentData(AbstractHBCIPassport.KEY_VOP_RESULT);
+        boolean approve = Settings.isVoPApprove();
+        if (!approve && Settings.isVoPApproveNotApplicable() && Freigaben.isNotApplicable(vop))
+        {
+          Logger.info("have VoP result: all items not applicable (RVNA), auto approve");
+          approve = true;
+        }
+        else if (!approve && vop != null && Settings.getVoPDecisionWait() > 0)
+        {
+          final HibiscusDBObject context = this.getContext(passport);
+          final String auftrag = context != null ? HBCIContext.toString(context) : null;
+          Logger.info("have VoP result: waiting max. " + Settings.getVoPDecisionWait() + " seconds for decision in web frontend");
+          approve = Freigaben.await(vop,msg,auftrag,Settings.getVoPDecisionWait());
+        }
+        Logger.info("have VoP result: approve: " + approve);
         retData.replace(0,retData.length(),Boolean.toString(approve));
         return;
 

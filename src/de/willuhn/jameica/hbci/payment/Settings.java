@@ -461,6 +461,24 @@ public class Settings
   }
   
   /**
+   * Liefert true, wenn VoP-Anfragen freigegeben werden sollen, deren Ergebnisse alle "nicht anwendbar" (RVNA) sind.
+   * @return true, wenn RVNA-Ergebnisse automatisch freigegeben werden sollen.
+   */
+  public static boolean isVoPApproveNotApplicable()
+  {
+    return settings.getBoolean("vop.approve.notapplicable",false);
+  }
+  
+  /**
+   * Liefert die Anzahl der Sekunden, die auf eine VoP-Entscheidung im Web-Frontend gewartet wird.
+   * @return Wartezeit in Sekunden. 0 = nicht warten, sondern ablehnen.
+   */
+  public static int getVoPDecisionWait()
+  {
+    return settings.getInt("vop.decision.wait.seconds",0);
+  }
+  
+  /**
    * Liefert das Passwort fuer das Sicherheitsmedium oder null.
    * @param passport das Sicherheitsmedium.
    * @param reason zusaetzlicher Code fuer den Zweck.

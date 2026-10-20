@@ -1,0 +1,93 @@
+#parse("includes/header.vm")
+
+<div id="breadcrumbs">
+  <a href="/hibiscus/">Home</a>
+  &raquo; <a href="freigabe.html">Zahlungsfreigabe</a>
+</div>
+
+#set($token = $c.getToken())
+#set($pending = $c.getPending())
+
+#if($c.isRunning() || $pending)
+<script type="text/javascript">
+  // Waehrend der Ausfuehrung neu laden, damit die VoP-Abfrage sofort erscheint
+  window.setTimeout(function() { window.location.href = "freigabe.html"; }, 3000);
+</script>
+#end
+
+#if($pending)
+  <h2>Namensabgleich des Empf&auml;ngers &ndash; Entscheidung erforderlich</h2>
+  <div class="note" style="border:1px dotted #800000;background-color: #F7E7E0">
+    Ohne Entscheidung wird der Auftrag um $format.getLongDatum($pending.deadline) abgelehnt.
+    #if($pending.auftrag)<br/>Auftrag: $c.escape($pending.auftrag)#end
+    #if($pending.text)<br/>Text der Bank: $c.escape($pending.text)#end
+  </div>
+  <table class="data">
+    <tr>
+      <th>Ergebnis</th>
+      <th>Angegebener Name</th>
+      <th>Name laut Bank</th>
+      <th>IBAN</th>
+      <th style="text-align:right">Betrag</th>
+      <th>Verwendungszweck</th>
+    </tr>
+    #foreach($i in $pending.items)
+      <tr>
+        <td>#if($i.status)$c.escape($i.status.description)#end</td>
+        <td>$c.escape($i.original)</td>
+        <td>$c.escape($i.name)</td>
+        <td>$c.escape($i.iban)</td>
+        <td style="text-align:right">#if($i.amount)$c.escape($i.amount)#end</td>
+        <td>$c.escape($i.usage)</td>
+      </tr>
+    #end
+  </table>
+  <form method="post" action="freigabe.html" style="margin-top:10px">
+    <input type="hidden" name="token" value="$token">
+    <input type="hidden" name="vop" value="$pending.id">
+    <button type="submit" name="action" value="approve">Auftrag dennoch ausf&uuml;hren</button>
+    <button type="submit" name="action" value="reject">Abbrechen</button>
+  </form>
+#end
+
+<h2>Offene SEPA-&Uuml;berweisungen</h2>
+
+#if($c.isRunning())
+  <div class="note"><b>Ausf&uuml;hrung l&auml;uft.</b> Bei einer Push-Freigabe bitte in SecureGo plus best&auml;tigen.</div>
+#end
+
+<form method="post" action="freigabe.html">
+  <input type="hidden" name="token" value="$token">
+  <table class="data">
+    <tr>
+      <th></th>
+      <th>Termin</th>
+      <th>Empf&auml;nger</th>
+      <th>IBAN</th>
+      <th style="text-align:right">Betrag</th>
+      <th>Verwendungszweck</th>
+    </tr>
+    #foreach($u in $c.getUeberweisungen())
+      <tr>
+        <td>#if($u.ueberfaellig())<input type="checkbox" name="id" value="$u.ID">#end</td>
+        <td>$format.getDatum($u.termin)</td>
+        <td>$c.escape($u.gegenkontoName)</td>
+        <td>$c.escape($u.gegenkontoNummer)</td>
+        <td style="text-align:right">$format.getBetrag($u.betrag)</td>
+        <td>$c.escape($u.zweck)</td>
+      </tr>
+    #end
+  </table>
+  <div style="margin-top:10px">
+    #if(!$c.isRunning())
+      <button type="submit" name="action" value="execute" onclick="return window.confirm('Ausgew&auml;hlte &Uuml;berweisungen jetzt an die Bank senden?')">Ausgew&auml;hlte &Uuml;berweisungen ausf&uuml;hren</button>
+    #end
+  </div>
+  <div class="note">Nur f&auml;llige &Uuml;berweisungen sind ausw&auml;hlbar.</div>
+</form>
+
+<div style="margin-top:20px">
+  #parse("includes/log.vm")
+</div>
+
+#parse("includes/footer.vm")

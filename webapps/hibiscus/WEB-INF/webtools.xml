@@ -24,6 +24,7 @@
     <page pattern="^/accounts.html"         template="accounts.vm"         controller="de.willuhn.jameica.hbci.payment.web.beans.Accounts" />
     <page pattern="^/account.html"          template="account.vm"          controller="de.willuhn.jameica.hbci.payment.web.beans.Account" action="load" />
 
+    <page pattern="^/freigabe.html"         template="freigabe.vm"         controller="de.willuhn.jameica.hbci.payment.web.beans.Freigabe" />
     <page pattern="^/log.html"              template="log.vm" />
     
     <!-- Default-Seite -->
