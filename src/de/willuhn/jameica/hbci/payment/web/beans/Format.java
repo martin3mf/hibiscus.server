@@ -13,6 +13,8 @@ package de.willuhn.jameica.hbci.payment.web.beans;
 
 import java.util.Date;
 
+import org.apache.commons.lang.StringEscapeUtils;
+
 import de.willuhn.jameica.hbci.HBCI;
 import de.willuhn.jameica.hbci.HBCIProperties;
 import de.willuhn.jameica.hbci.payment.Plugin;
@@ -84,6 +86,16 @@ public class Format
   public String getBetrag(double d)
   {
     return HBCI.DECIMALFORMAT.format(d) + " " + HBCIProperties.CURRENCY_DEFAULT_DE;
+  }
+
+  /**
+   * HTML-Escaping fuer die Ausgabe im Template.
+   * @param s der Text.
+   * @return der escapte Text.
+   */
+  public String escape(Object s)
+  {
+    return s == null ? "" : StringEscapeUtils.escapeHtml(s.toString());
   }
 
   /**

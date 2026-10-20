@@ -15,14 +15,14 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
-
-import org.apache.commons.lang.StringEscapeUtils;
 
 import de.willuhn.datasource.pseudo.PseudoIterator;
 import de.willuhn.datasource.rmi.DBIterator;
@@ -103,16 +103,6 @@ public class Freigabe
   }
 
   /**
-   * HTML-Escaping fuer die Ausgabe im Template.
-   * @param s der Text.
-   * @return der escapte Text.
-   */
-  public String escape(Object s)
-  {
-    return s == null ? "" : StringEscapeUtils.escapeHtml(s.toString());
-  }
-
-  /**
    * Fuehrt die ausgewaehlten faelligen Ueberweisungen aus.
    * @throws Exception
    */
@@ -122,33 +112,52 @@ public class Freigabe
     {
       this.checkRequest();
 
-      if (this.isRunning())
-        throw new ApplicationException(i18n.tr("Synchronisierung l\u00e4uft bereits"));
-
       final String[] ids = this.request.getParameterValues("id");
       if (ids == null || ids.length == 0)
         throw new ApplicationException(i18n.tr("Keine \u00dcberweisung ausgew\u00e4hlt"));
 
+      // Jede ID nur einmal (numerisch kanonisiert, "042" = "42") - sonst wuerde derselbe Auftrag doppelt gesendet
+      final Set<Long> unique = new LinkedHashSet<>();
+      for (String id:ids)
+      {
+        try
+        {
+          if (!unique.add(Long.valueOf(id.trim())))
+            throw new ApplicationException(i18n.tr("\u00dcberweisung mehrfach ausgew\u00e4hlt"));
+        }
+        catch (NumberFormatException nfe)
+        {
+          throw new ApplicationException(i18n.tr("Ung\u00fcltige Auftrags-ID"));
+        }
+      }
+
       final BeanService service = Application.getBootLoader().getBootable(BeanService.class);
       final SynchronizeEngine engine = service.get(SynchronizeEngine.class);
 
-      final Map<SynchronizeBackend,List<SynchronizeJob>> jobs = new LinkedHashMap<>();
-      for (String id:ids)
+      // Pruefen und Starten atomar, damit zwei parallele Requests nicht beide durchkommen
+      synchronized (Freigabe.class)
       {
-        final AuslandsUeberweisung u = (AuslandsUeberweisung) Settings.getDBService().createObject(AuslandsUeberweisung.class,id);
-        if (u.ausgefuehrt() || !u.ueberfaellig())
-          throw new ApplicationException(i18n.tr("\u00dcberweisung {0} ist bereits ausgef\u00fchrt oder noch nicht f\u00e4llig",id));
+        if (this.isRunning())
+          throw new ApplicationException(i18n.tr("Synchronisierung l\u00e4uft bereits"));
 
-        final SynchronizeBackend backend = engine.getBackend(SynchronizeJobSepaUeberweisung.class,u.getKonto());
-        final SynchronizeJob job = backend.create(SynchronizeJobSepaUeberweisung.class,u.getKonto());
-        job.setContext(SynchronizeJob.CTX_ENTITY,u);
-        jobs.computeIfAbsent(backend,b -> new ArrayList<>()).add(job);
-      }
+        final Map<SynchronizeBackend,List<SynchronizeJob>> jobs = new LinkedHashMap<>();
+        for (Long id:unique)
+        {
+          final AuslandsUeberweisung u = (AuslandsUeberweisung) Settings.getDBService().createObject(AuslandsUeberweisung.class,id.toString());
+          if (u.ausgefuehrt() || !u.ueberfaellig())
+            throw new ApplicationException(i18n.tr("\u00dcberweisung {0} ist bereits ausgef\u00fchrt oder noch nicht f\u00e4llig",id.toString()));
 
-      for (Map.Entry<SynchronizeBackend,List<SynchronizeJob>> e:jobs.entrySet())
-      {
-        Logger.info("manual execution of " + e.getValue().size() + " transfers via " + e.getKey().getName());
-        e.getKey().execute(e.getValue());
+          final SynchronizeBackend backend = engine.getBackend(SynchronizeJobSepaUeberweisung.class,u.getKonto());
+          final SynchronizeJob job = backend.create(SynchronizeJobSepaUeberweisung.class,u.getKonto());
+          job.setContext(SynchronizeJob.CTX_ENTITY,u);
+          jobs.computeIfAbsent(backend,b -> new ArrayList<>()).add(job);
+        }
+
+        for (Map.Entry<SynchronizeBackend,List<SynchronizeJob>> e:jobs.entrySet())
+        {
+          Logger.info("manual execution of " + e.getValue().size() + " transfers via " + e.getKey().getName());
+          e.getKey().execute(e.getValue());
+        }
       }
       Application.getMessagingFactory().sendMessage(new StatusBarMessage(i18n.tr("Ausf\u00fchrung gestartet"),StatusBarMessage.TYPE_SUCCESS));
     }

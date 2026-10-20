@@ -36,6 +36,7 @@ public class Freigaben
     private final String text;
     private final String auftrag;
     private final Date deadline;
+    private final long deadlineNanos;
     private Boolean approved = null;
 
     private Entscheidung(VoPResult result, String text, String auftrag, int seconds)
@@ -44,6 +45,7 @@ public class Freigaben
       this.text     = text;
       this.auftrag  = auftrag;
       this.deadline = new Date(this.created.getTime() + seconds * 1000L);
+      this.deadlineNanos = System.nanoTime() + seconds * 1000000000L;
     }
 
     /**
@@ -131,16 +133,24 @@ public class Freigaben
       {
         while (e.approved == null)
         {
-          long left = e.deadline.getTime() - System.currentTimeMillis();
+          long left = e.deadlineNanos - System.nanoTime();
           if (left <= 0)
+          {
+            e.approved = Boolean.FALSE; // Fristablauf ist endgueltig abgelehnt
             break;
-          e.wait(left);
+          }
+          e.wait(Math.max(1L,left / 1000000L));
         }
         return Boolean.TRUE.equals(e.approved);
       }
     }
     catch (InterruptedException ie)
     {
+      synchronized (e)
+      {
+        if (e.approved == null)
+          e.approved = Boolean.FALSE;
+      }
       Thread.currentThread().interrupt();
       return false;
     }
@@ -176,7 +186,8 @@ public class Freigaben
 
     synchronized (e)
     {
-      if (e.approved != null)
+      // Nach Fristablauf keine Freigabe mehr, auch wenn der Callback noch nicht wieder aufgewacht ist
+      if (e.approved != null || System.nanoTime() - e.deadlineNanos >= 0)
         return false;
       e.approved = approve;
       e.notifyAll();

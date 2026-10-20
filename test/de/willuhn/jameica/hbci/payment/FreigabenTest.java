@@ -42,6 +42,14 @@ public class FreigabenTest
     check(!Freigaben.decide(id,true), "second decision refused");
     check(!f.get(), "first decision wins");
 
+    // Late approval after the deadline is refused and the job stays rejected
+    CompletableFuture<Boolean> late = CompletableFuture.supplyAsync(() -> Freigaben.await(result(VoPStatus.NO_MATCH),"t","j",1));
+    waitPending();
+    Freigaben.Entscheidung pending = Freigaben.getPending();
+    Thread.sleep(1100);
+    check(!Freigaben.decide(pending.getId(),true), "late approval refused");
+    check(!late.get(), "late approval does not flip timeout");
+
     System.out.println("FreigabenTest: OK");
   }
 

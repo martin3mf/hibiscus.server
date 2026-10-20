@@ -19,8 +19,8 @@
   <h2>Namensabgleich des Empf&auml;ngers &ndash; Entscheidung erforderlich</h2>
   <div class="note" style="border:1px dotted #800000;background-color: #F7E7E0">
     Ohne Entscheidung wird der Auftrag um $format.getLongDatum($pending.deadline) abgelehnt.
-    #if($pending.auftrag)<br/>Auftrag: $c.escape($pending.auftrag)#end
-    #if($pending.text)<br/>Text der Bank: $c.escape($pending.text)#end
+    #if($pending.auftrag)<br/>Auftrag: $format.escape($pending.auftrag)#end
+    #if($pending.text)<br/>Text der Bank: $format.escape($pending.text)#end
   </div>
   <table class="data">
     <tr>
@@ -33,12 +33,12 @@
     </tr>
     #foreach($i in $pending.items)
       <tr>
-        <td>#if($i.status)$c.escape($i.status.description)#end</td>
-        <td>$c.escape($i.original)</td>
-        <td>$c.escape($i.name)</td>
-        <td>$c.escape($i.iban)</td>
-        <td style="text-align:right">#if($i.amount)$c.escape($i.amount)#end</td>
-        <td>$c.escape($i.usage)</td>
+        <td>#if($i.status)$format.escape($i.status.description)#end</td>
+        <td>$format.escape($i.original)</td>
+        <td>$format.escape($i.name)</td>
+        <td>$format.escape($i.iban)</td>
+        <td style="text-align:right">#if($i.amount)$format.escape($i.amount)#end</td>
+        <td>$format.escape($i.usage)</td>
       </tr>
     #end
   </table>
@@ -71,10 +71,10 @@
       <tr>
         <td>#if($u.ueberfaellig())<input type="checkbox" name="id" value="$u.ID">#end</td>
         <td>$format.getDatum($u.termin)</td>
-        <td>$c.escape($u.gegenkontoName)</td>
-        <td>$c.escape($u.gegenkontoNummer)</td>
+        <td>$format.escape($u.gegenkontoName)</td>
+        <td>$format.escape($u.gegenkontoNummer)</td>
         <td style="text-align:right">$format.getBetrag($u.betrag)</td>
-        <td>$c.escape($u.zweck)</td>
+        <td>$format.escape($u.zweck)</td>
       </tr>
     #end
   </table>

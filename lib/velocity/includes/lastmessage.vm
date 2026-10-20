@@ -24,6 +24,6 @@
 
 #if($message.last)
   <div class="message">
-    <span class="type-$message.last.type">$!message.last.text</span>
+    <span class="type-$message.last.type">$format.escape($message.last.text)</span>
   </div>
 #end  
