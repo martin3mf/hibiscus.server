@@ -97,6 +97,12 @@ public class Freigaben
     }
   }
 
+  /**
+   * Gemeinsame Sperre fuer Auftragsaenderungen der Freigabe-Seite und das Ermitteln/Starten von Synchronisierungsjobs.
+   * Sonst koennte der Scheduler einen Auftrag laden, den die Seite danach aendert oder loescht.
+   */
+  public final static Object LOCK = new Object();
+
   private static Entscheidung pending = null;
 
   /**

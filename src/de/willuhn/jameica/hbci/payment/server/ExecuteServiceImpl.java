@@ -17,6 +17,7 @@ import java.util.Iterator;
 import java.util.List;
 
 import de.willuhn.jameica.hbci.messaging.NeueUmsaetze;
+import de.willuhn.jameica.hbci.payment.Freigaben;
 import de.willuhn.jameica.hbci.payment.Plugin;
 import de.willuhn.jameica.hbci.payment.rmi.ExecuteService;
 import de.willuhn.jameica.hbci.payment.web.beans.Welcome;
@@ -115,16 +116,20 @@ public class ExecuteServiceImpl extends UnicastRemoteObject implements ExecuteSe
     {
       // Sonst naechste Iteration starten
       SynchronizeBackend backend = this.list.next();
-      List<SynchronizeJob> jobs = backend.getSynchronizeJobs(null);
-      if (jobs == null || jobs.size() == 0)
+      // Jobs ermitteln und starten unter der Sperre der Freigabe-Seite, damit sie keinen geladenen Auftrag aendert oder loescht
+      synchronized (Freigaben.LOCK)
       {
-        // Bescheid geben, dass das naechste Backend darf
-        Application.getMessagingFactory().getMessagingQueue(SynchronizeBackend.QUEUE_STATUS).sendMessage(new QueryMessage(ProgressMonitor.STATUS_DONE));
-        Logger.info("backend " + backend.getName() + " contains no jobs, skipping");
-        return;
+        List<SynchronizeJob> jobs = backend.getSynchronizeJobs(null);
+        if (jobs != null && jobs.size() > 0)
+        {
+          Logger.info("synchronizing backend " + backend.getName() + " with " + jobs.size() + " jobs");
+          backend.execute(jobs);
+          return;
+        }
       }
-      Logger.info("synchronizing backend " + backend.getName() + " with " + jobs.size() + " jobs");
-      backend.execute(jobs);
+      // Bescheid geben, dass das naechste Backend darf (ausserhalb der Sperre, loest den naechsten sync() aus)
+      Application.getMessagingFactory().getMessagingQueue(SynchronizeBackend.QUEUE_STATUS).sendMessage(new QueryMessage(ProgressMonitor.STATUS_DONE));
+      Logger.info("backend " + backend.getName() + " contains no jobs, skipping");
     }
     catch (ApplicationException ae)
     {

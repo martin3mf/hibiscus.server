@@ -38,11 +38,15 @@ import de.willuhn.jameica.hbci.payment.Freigaben;
 import de.willuhn.jameica.hbci.payment.Plugin;
 import de.willuhn.jameica.hbci.rmi.AuslandsUeberweisung;
 import de.willuhn.jameica.hbci.rmi.BaseUeberweisung;
+import de.willuhn.jameica.hbci.rmi.Konto;
 import de.willuhn.jameica.hbci.rmi.SepaLastschrift;
+import de.willuhn.jameica.hbci.rmi.SepaSammelLastBuchung;
+import de.willuhn.jameica.hbci.rmi.SepaSammelLastschrift;
 import de.willuhn.jameica.hbci.synchronize.SynchronizeBackend;
 import de.willuhn.jameica.hbci.synchronize.SynchronizeEngine;
 import de.willuhn.jameica.hbci.synchronize.jobs.SynchronizeJob;
 import de.willuhn.jameica.hbci.synchronize.jobs.SynchronizeJobSepaLastschrift;
+import de.willuhn.jameica.hbci.synchronize.jobs.SynchronizeJobSepaSammelLastschrift;
 import de.willuhn.jameica.hbci.synchronize.jobs.SynchronizeJobSepaUeberweisung;
 import de.willuhn.jameica.services.BeanService;
 import de.willuhn.jameica.system.Application;
@@ -171,6 +175,26 @@ public class Freigabe
         .put("sequenz",l.getSequenceType() != null ? l.getSequenceType().getDescription() : ""));
     }
     json.put("debits",debits);
+
+    final JSONArray collective = new JSONArray();
+    DBIterator it = Settings.getDBService().createList(SepaSammelLastschrift.class);
+    it.addFilter("(ausgefuehrt is null or ausgefuehrt = 0)");
+    it.setOrder("order by termin, id");
+    while (it.hasNext())
+    {
+      final SepaSammelLastschrift l = (SepaSammelLastschrift) it.next();
+      if (!all && !l.ueberfaellig())
+        continue;
+      collective.put(new JSONObject()
+        .put("id",l.getID())
+        .put("termin",f.getDatum(l.getTermin()))
+        .put("faellig",l.ueberfaellig())
+        .put("ziel",f.getDatum(l.getTargetDate()))
+        .put("bezeichnung",str(l.getBezeichnung()))
+        .put("anzahl",l.getBuchungen().size())
+        .put("summe",f.getBetrag(l.getSumme().doubleValue())));
+    }
+    json.put("collective",collective);
     this.send(json);
   }
 
@@ -187,7 +211,8 @@ public class Freigabe
       // Jede ID nur einmal - sonst wuerde derselbe Auftrag doppelt gesendet
       final Set<Long> transferIds = Eingabe.ids(this.request.getParameterValues("id"));
       final Set<Long> debitIds = Eingabe.ids(this.request.getParameterValues("last"));
-      if (transferIds.isEmpty() && debitIds.isEmpty())
+      final Set<Long> collectiveIds = Eingabe.ids(this.request.getParameterValues("sammel"));
+      if (transferIds.isEmpty() && debitIds.isEmpty() && collectiveIds.isEmpty())
         throw new ApplicationException(i18n.tr("Kein Auftrag ausgew\u00e4hlt"));
 
       final BeanService service = Application.getBootLoader().getBootable(BeanService.class);
@@ -195,7 +220,7 @@ public class Freigabe
       final Date today = Eingabe.today();
 
       // Pruefen und Starten atomar, damit zwei parallele Requests nicht beide durchkommen
-      synchronized (Freigabe.class)
+      synchronized (Freigaben.LOCK)
       {
         if (this.isRunning())
           throw new ApplicationException(i18n.tr("Synchronisierung l\u00e4uft bereits"));
@@ -209,14 +234,21 @@ public class Freigabe
             Eingabe.checkTermin(true,u.getTermin(),today);
           else if (!u.ueberfaellig())
             throw new ApplicationException(i18n.tr("\u00dcberweisung {0} ist noch nicht f\u00e4llig",id.toString()));
-          addJob(jobs,engine,SynchronizeJobSepaUeberweisung.class,u);
+          addJob(jobs,engine,SynchronizeJobSepaUeberweisung.class,u.getKonto(),u);
         }
         for (Long id:debitIds)
         {
           final SepaLastschrift l = load(SepaLastschrift.class,id);
           if (!l.ueberfaellig())
             throw new ApplicationException(i18n.tr("Lastschrift {0} ist noch nicht f\u00e4llig",id.toString()));
-          addJob(jobs,engine,SynchronizeJobSepaLastschrift.class,l);
+          addJob(jobs,engine,SynchronizeJobSepaLastschrift.class,l.getKonto(),l);
+        }
+        for (Long id:collectiveIds)
+        {
+          final SepaSammelLastschrift l = (SepaSammelLastschrift) Settings.getDBService().createObject(SepaSammelLastschrift.class,id.toString());
+          if (l.isNewObject() || l.ausgefuehrt() || !l.ueberfaellig())
+            throw new ApplicationException(i18n.tr("Sammellastschrift {0} fehlt, ist ausgef\u00fchrt oder noch nicht f\u00e4llig",id.toString()));
+          addJob(jobs,engine,SynchronizeJobSepaSammelLastschrift.class,l.getKonto(),l);
         }
 
         for (Map.Entry<SynchronizeBackend,List<SynchronizeJob>> e:jobs.entrySet())
@@ -252,7 +284,7 @@ public class Freigabe
       if (typ == null && datum == null)
         throw new ApplicationException(i18n.tr("Bitte Typ oder Datum w\u00e4hlen"));
 
-      synchronized (Freigabe.class)
+      synchronized (Freigaben.LOCK)
       {
         if (this.isRunning())
           throw new ApplicationException(i18n.tr("Synchronisierung l\u00e4uft bereits"));
@@ -283,6 +315,99 @@ public class Freigabe
   }
 
   /**
+   * Fasst Einzellastschriften zu Sammellastschriften zusammen, je Konto, Sequenztyp, Lastschriftart und Faelligkeit
+   * (wie Hibiscus' SepaLastschriftMerger, der einen Desktop-Dialog braucht). Die Einzellastschriften werden geloescht,
+   * sonst wuerde derselbe Betrag doppelt eingezogen. Alles in einer Transaktion.
+   * @throws Exception
+   */
+  public void merge() throws Exception
+  {
+    try
+    {
+      this.checkRequest();
+      final Set<Long> ids = Eingabe.ids(this.request.getParameterValues("last"));
+      if (ids.isEmpty())
+        throw new ApplicationException(i18n.tr("Keine Lastschrift ausgew\u00e4hlt"));
+
+      int created = 0;
+      synchronized (Freigaben.LOCK)
+      {
+        if (this.isRunning())
+          throw new ApplicationException(i18n.tr("Synchronisierung l\u00e4uft bereits"));
+
+        final SimpleDateFormat df = new SimpleDateFormat("dd.MM.yyyy");
+        final Map<String,List<SepaLastschrift>> groups = new LinkedHashMap<>();
+        for (Long id:ids)
+        {
+          final SepaLastschrift l = load(SepaLastschrift.class,id);
+          if (l.getSequenceType() == null || l.getType() == null || l.getTargetDate() == null)
+            throw new ApplicationException(i18n.tr("Lastschrift {0}: Sequenztyp, Art oder F\u00e4lligkeit fehlt",id.toString()));
+          final String key = l.getKonto().getID() + "/" + l.getSequenceType().name() + "/" + l.getType().name() + "/" + df.format(l.getTargetDate());
+          groups.computeIfAbsent(key,k -> new ArrayList<>()).add(l);
+        }
+
+        // Transaktion an der ersten neuen Sammellastschrift wie im Hibiscus-Merger, nicht an einer Einzellastschrift, die geloescht wird
+        SepaSammelLastschrift tx = null;
+        try
+        {
+          for (List<SepaLastschrift> group:groups.values())
+          {
+            final SepaLastschrift g = group.get(0);
+            Date termin = g.getTermin();
+            for (SepaLastschrift l:group)
+            {
+              if (l.getTermin() != null && (termin == null || l.getTermin().before(termin)))
+                termin = l.getTermin();
+            }
+            final SepaSammelLastschrift s = (SepaSammelLastschrift) Settings.getDBService().createObject(SepaSammelLastschrift.class,null);
+            s.setKonto(g.getKonto());
+            s.setBezeichnung(i18n.tr("{0} {1} vom {2}",g.getSequenceType().getDescription(),g.getType().getDescription(),df.format(new Date())));
+            s.setSequenceType(g.getSequenceType());
+            s.setType(g.getType());
+            s.setTargetDate(g.getTargetDate());
+            s.setTermin(termin);
+            if (tx == null)
+            {
+              tx = s;
+              tx.transactionBegin();
+            }
+            s.store();
+            for (SepaLastschrift l:group)
+            {
+              final SepaSammelLastBuchung b = s.createBuchung();
+              b.setBetrag(l.getBetrag());
+              b.setCreditorId(l.getCreditorId());
+              b.setEndtoEndId(l.getEndtoEndId());
+              b.setGegenkontoBLZ(l.getGegenkontoBLZ());
+              b.setGegenkontoName(l.getGegenkontoName());
+              b.setGegenkontoNummer(l.getGegenkontoNummer());
+              b.setMandateId(l.getMandateId());
+              b.setSignatureDate(l.getSignatureDate());
+              b.setZweck(l.getZweck());
+              b.store();
+              Logger.info("web merge: debit " + l.getID() + " (" + f(l.getBetrag()) + ") -> collective debit " + s.getID());
+              l.delete();
+            }
+            created++;
+          }
+          tx.transactionCommit();
+        }
+        catch (Exception e)
+        {
+          if (tx != null)
+            tx.transactionRollback();
+          throw e;
+        }
+      }
+      this.send(result(true,i18n.tr("{0} Lastschrift(en) zu {1} Sammellastschrift(en) zusammengefasst",String.valueOf(ids.size()),String.valueOf(created))));
+    }
+    catch (ApplicationException ae)
+    {
+      this.send(result(false,ae.getMessage()));
+    }
+  }
+
+  /**
    * Aendert Betrag, Verwendungszweck und Termin eines Auftrags (bei Lastschriften auch die Faelligkeit).
    * Name und IBAN sind bewusst nicht aenderbar.
    * @throws Exception
@@ -302,7 +427,7 @@ public class Freigabe
       if (ziel != null)
         Eingabe.checkZiel(ziel,termin,today);
 
-      synchronized (Freigabe.class)
+      synchronized (Freigaben.LOCK)
       {
         if (this.isRunning())
           throw new ApplicationException(i18n.tr("Synchronisierung l\u00e4uft bereits"));
@@ -411,13 +536,14 @@ public class Freigabe
    * @param jobs Jobs je Backend.
    * @param engine die Synchronize-Engine.
    * @param type Jobtyp.
+   * @param konto Konto des Auftrags.
    * @param u der Auftrag.
    * @throws Exception
    */
-  private static void addJob(Map<SynchronizeBackend,List<SynchronizeJob>> jobs, SynchronizeEngine engine, Class<? extends SynchronizeJob> type, BaseUeberweisung u) throws Exception
+  private static void addJob(Map<SynchronizeBackend,List<SynchronizeJob>> jobs, SynchronizeEngine engine, Class<? extends SynchronizeJob> type, Konto konto, Object u) throws Exception
   {
-    final SynchronizeBackend backend = engine.getBackend(type,u.getKonto());
-    final SynchronizeJob job = backend.create(type,u.getKonto());
+    final SynchronizeBackend backend = engine.getBackend(type,konto);
+    final SynchronizeJob job = backend.create(type,konto);
     job.setContext(SynchronizeJob.CTX_ENTITY,u);
     jobs.computeIfAbsent(backend,b -> new ArrayList<>()).add(job);
   }

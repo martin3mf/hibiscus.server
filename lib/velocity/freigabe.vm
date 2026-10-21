@@ -104,6 +104,26 @@
 </table>
 <div style="margin-top:10px">
   <button type="button" class="execute" onclick="freigabe.execute('last')">Ausgew&auml;hlte Lastschriften einziehen</button>
+  <button type="button" class="execute" onclick="freigabe.merge()">Zu Sammellastschrift zusammenfassen</button>
+</div>
+
+<h2>SEPA-Sammellastschriften</h2>
+
+<table class="data">
+  <thead>
+    <tr>
+      <th><input type="checkbox" title="Alle ausw&auml;hlen" onclick="freigabe.selectAll('sammel',this.checked)"></th>
+      <th>Termin</th>
+      <th>F&auml;lligkeit</th>
+      <th>Bezeichnung</th>
+      <th style="text-align:right">Anzahl</th>
+      <th style="text-align:right">Summe</th>
+    </tr>
+  </thead>
+  <tbody id="collective"><tr><td colspan="6">Lade ...</td></tr></tbody>
+</table>
+<div style="margin-top:10px">
+  <button type="button" class="execute" onclick="freigabe.execute('sammel')">Ausgew&auml;hlte Sammellastschriften einziehen</button>
 </div>
 
 <div style="margin-top:20px">
@@ -182,11 +202,16 @@ var freigabe = (function()
       cb.name = name;
       cb.value = u.id;
       cb.checked = !!checked[u.id];
-      var edit = document.createElement("a");
-      edit.href = "#";
-      edit.textContent = "bearbeiten";
-      edit.onclick = function() { openEdit(name, u); return false; };
-      var tr = row([cb].concat(cols(u)).concat([edit]), rightCol);
+      var cells = [cb].concat(cols(u));
+      if (name != "sammel")
+      {
+        var edit = document.createElement("a");
+        edit.href = "#";
+        edit.textContent = "bearbeiten";
+        edit.onclick = function() { openEdit(name, u); return false; };
+        cells.push(edit);
+      }
+      var tr = row(cells, rightCol);
       if (!u.faellig) tr.style.color = "#808080";
       body.appendChild(tr);
     });
@@ -212,6 +237,7 @@ var freigabe = (function()
 
     var none = el("showall").checked ? "Keine offenen " : "Keine f\u00e4lligen ";
     table("transfers", "id", s.transfers, function(u) { return [u.termin, TYP[u.typ] || u.typ, u.name, u.iban, u.betrag, u.zweck]; }, 5, none + "\u00dcberweisungen", s.force);
+    table("collective", "sammel", s.collective, function(u) { return [u.termin, u.ziel, u.bezeichnung, String(u.anzahl), u.summe]; }, 5, none + "Sammellastschriften", s.force);
     table("debits", "last", s.debits, function(u) { return [u.termin, u.ziel, u.name, u.iban, u.betrag, u.mandat + " (" + u.sequenz + ")", u.zweck]; }, 5, none + "Lastschriften", s.force);
   }
 
@@ -253,12 +279,22 @@ var freigabe = (function()
     execute: function(name)
     {
       var ids = checkedIds(name);
-      var what = name == "last" ? "Lastschrift(en) jetzt bei der Bank einziehen" : "\u00dcberweisung(en) jetzt an die Bank senden";
+      var what = name == "id" ? "\u00dcberweisung(en) jetzt an die Bank senden" : (name == "sammel" ? "Sammellastschrift(en)" : "Lastschrift(en)") + " jetzt bei der Bank einziehen";
       if (ids.length == 0) { message("Kein Auftrag ausgew\u00e4hlt", false); return; }
       if (!window.confirm(ids.length + " " + what + "?"))
         return;
       var params = ids.map(function(id) { return [name, id]; });
       params.push(["action", "execute"]);
+      post(params);
+    },
+    merge: function()
+    {
+      var ids = checkedIds("last");
+      if (ids.length == 0) { message("Keine Lastschrift ausgew\u00e4hlt", false); return; }
+      if (!window.confirm(ids.length + " Lastschrift(en) zu Sammellastschriften zusammenfassen? Die Einzellastschriften werden dabei gel\u00f6scht."))
+        return;
+      var params = ids.map(function(id) { return ["last", id]; });
+      params.push(["action", "merge"]);
       post(params);
     },
     batch: function()
