@@ -19,6 +19,7 @@ import javax.annotation.Resource;
 
 import org.apache.commons.lang.StringUtils;
 import org.kapott.hbci.GV_Result.GVRVoP.VoPResult;
+import org.kapott.hbci.GV_Result.GVRVoP.VoPResultItem;
 import org.kapott.hbci.callback.HBCICallback;
 import org.kapott.hbci.callback.HBCICallbackConsole;
 import org.kapott.hbci.exceptions.HBCI_Exception;
@@ -351,6 +352,12 @@ public class HBCICallbackServer extends AbstractHibiscusHBCICallback
         if (!approve && Settings.isVoPApproveNotApplicable() && Freigaben.isNotApplicable(vop))
         {
           Logger.info("have VoP result: all items not applicable (RVNA), auto approve");
+          approve = true;
+        }
+        else if (!approve && Freigabeliste.isAllowed(vop,Freigabeliste.load(),Settings.isVoPApproveNotApplicable()))
+        {
+          for (VoPResultItem i:vop.getItems())
+            Logger.info("have VoP result: allow list approves " + i.getStatus() + " for " + i.getIban() + " / " + i.getOriginal() + " / " + i.getName());
           approve = true;
         }
         else if (!approve && vop != null && Settings.getVoPDecisionWait() > 0)

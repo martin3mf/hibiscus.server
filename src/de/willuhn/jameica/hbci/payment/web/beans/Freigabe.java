@@ -34,6 +34,7 @@ import org.kapott.hbci.GV_Result.GVRVoP.VoPResultItem;
 
 import de.willuhn.datasource.rmi.DBIterator;
 import de.willuhn.jameica.hbci.Settings;
+import de.willuhn.jameica.hbci.payment.Freigabeliste;
 import de.willuhn.jameica.hbci.payment.Freigaben;
 import de.willuhn.jameica.hbci.payment.Plugin;
 import de.willuhn.jameica.hbci.rmi.AuslandsUeberweisung;
@@ -63,6 +64,7 @@ public class Freigabe
 {
   private final static I18N i18n = Application.getPluginLoader().getPlugin(Plugin.class).getResources().getI18N();
   private final static String TOKEN = "freigabe.token";
+  private final static Date PARKED = new java.util.GregorianCalendar(2099,java.util.Calendar.DECEMBER,31).getTime();
 
   @Request
   private HttpServletRequest request = null;
@@ -130,71 +132,90 @@ public class Freigabe
    */
   public void status() throws Exception
   {
-    final Format f = new Format();
     final JSONObject json = new JSONObject();
-    json.put("running",this.isRunning());
-
-    final Freigaben.Entscheidung e = this.getPending();
-    if (e != null)
+    // Unter der Sperre lesen: eine laufende Aenderung (z.B. merge) teilt die JDBC-Verbindung, ihr halber Stand waere sonst sichtbar
+    synchronized (Freigaben.LOCK)
     {
-      final JSONArray items = new JSONArray();
-      for (VoPResultItem i:e.getItems())
+      final Format f = new Format();
+      json.put("running",this.isRunning());
+
+      final Freigaben.Entscheidung e = this.getPending();
+      if (e != null)
       {
-        items.put(new JSONObject()
-          .put("status",i.getStatus() != null ? i.getStatus().getDescription() : "")
-          .put("original",str(i.getOriginal()))
-          .put("name",str(i.getName()))
-          .put("iban",str(i.getIban()))
-          .put("amount",i.getAmount() != null ? i.getAmount().toPlainString() : "")
-          .put("usage",str(i.getUsage())));
+        final JSONArray items = new JSONArray();
+        for (VoPResultItem i:e.getItems())
+        {
+          items.put(new JSONObject()
+            .put("status",i.getStatus() != null ? i.getStatus().getDescription() : "")
+            .put("original",str(i.getOriginal()))
+            .put("name",str(i.getName()))
+            .put("iban",str(i.getIban()))
+            .put("amount",i.getAmount() != null ? i.getAmount().toPlainString() : "")
+            .put("usage",str(i.getUsage())));
+        }
+        json.put("pending",new JSONObject()
+          .put("id",e.getId())
+          .put("deadline",f.getLongDatum(e.getDeadline()))
+          .put("auftrag",str(e.getAuftrag()))
+          .put("text",str(e.getText()))
+          .put("items",items)
+          .put("learnable",learnable(e)));
       }
-      json.put("pending",new JSONObject()
-        .put("id",e.getId())
-        .put("deadline",f.getLongDatum(e.getDeadline()))
-        .put("auftrag",str(e.getAuftrag()))
-        .put("text",str(e.getText()))
-        .put("items",items));
-    }
 
-    final boolean all = "1".equals(this.request.getParameter("all"));
-    final JSONArray transfers = new JSONArray();
-    for (AuslandsUeberweisung u:this.list(AuslandsUeberweisung.class,all))
-    {
-      transfers.put(json(f,u)
-        .put("typ",u.isUmbuchung() ? "umbuchung" : u.isInstantPayment() ? "instant" : u.isTerminUeberweisung() ? "termin" : "normal"));
-    }
-    json.put("transfers",transfers);
+      final JSONArray allow = new JSONArray();
+      for (Freigabeliste.Eintrag a:Freigabeliste.load())
+      {
+        allow.put(new JSONObject()
+          .put("key",a.toString())
+          .put("iban",a.getIban())
+          .put("name",a.getName())
+          .put("bank",str(a.getBank()))
+          .put("manuell",a.isManuell())
+          .put("datum",a.getDatum()));
+      }
+      json.put("allow",allow);
 
-    final JSONArray debits = new JSONArray();
-    for (SepaLastschrift l:this.list(SepaLastschrift.class,all))
-    {
-      debits.put(json(f,l)
-        .put("ziel",f.getDatum(l.getTargetDate()))
-        .put("zielIso",iso(l.getTargetDate()))
-        .put("mandat",str(l.getMandateId()))
-        .put("sequenz",l.getSequenceType() != null ? l.getSequenceType().getDescription() : ""));
-    }
-    json.put("debits",debits);
+      final boolean all = "1".equals(this.request.getParameter("all"));
+      final JSONArray transfers = new JSONArray();
+      for (AuslandsUeberweisung u:this.list(AuslandsUeberweisung.class,all))
+      {
+        transfers.put(json(f,u)
+          .put("typ",u.isUmbuchung() ? "umbuchung" : u.isInstantPayment() ? "instant" : u.isTerminUeberweisung() ? "termin" : "normal"));
+      }
+      json.put("transfers",transfers);
 
-    final JSONArray collective = new JSONArray();
-    DBIterator it = Settings.getDBService().createList(SepaSammelLastschrift.class);
-    it.addFilter("(ausgefuehrt is null or ausgefuehrt = 0)");
-    it.setOrder("order by termin, id");
-    while (it.hasNext())
-    {
-      final SepaSammelLastschrift l = (SepaSammelLastschrift) it.next();
-      if (!all && !l.ueberfaellig())
-        continue;
-      collective.put(new JSONObject()
-        .put("id",l.getID())
-        .put("termin",f.getDatum(l.getTermin()))
-        .put("faellig",l.ueberfaellig())
-        .put("ziel",f.getDatum(l.getTargetDate()))
-        .put("bezeichnung",str(l.getBezeichnung()))
-        .put("anzahl",l.getBuchungen().size())
-        .put("summe",f.getBetrag(l.getSumme().doubleValue())));
+      final JSONArray debits = new JSONArray();
+      for (SepaLastschrift l:this.list(SepaLastschrift.class,all))
+      {
+        debits.put(json(f,l)
+          .put("ziel",f.getDatum(l.getTargetDate()))
+          .put("zielIso",iso(l.getTargetDate()))
+          .put("mandat",str(l.getMandateId()))
+          .put("sequenz",l.getSequenceType() != null ? l.getSequenceType().getDescription() : ""));
+      }
+      json.put("debits",debits);
+
+      final JSONArray collective = new JSONArray();
+      DBIterator it = Settings.getDBService().createList(SepaSammelLastschrift.class);
+      it.addFilter("(ausgefuehrt is null or ausgefuehrt = 0)");
+      it.setOrder("order by termin, id");
+      while (it.hasNext())
+      {
+        final SepaSammelLastschrift l = (SepaSammelLastschrift) it.next();
+        if (!all && !l.ueberfaellig())
+          continue;
+        collective.put(new JSONObject()
+          .put("id",l.getID())
+          .put("termin",f.getDatum(l.getTermin()))
+          .put("faellig",l.ueberfaellig())
+          .put("ziel",f.getDatum(l.getTargetDate()))
+          .put("bezeichnung",str(l.getBezeichnung()))
+          .put("anzahl",l.getBuchungen().size())
+          .put("summe",f.getBetrag(l.getSumme().doubleValue()))
+          .put("fp",fp(l)));
+      }
+      json.put("collective",collective);
     }
-    json.put("collective",collective);
     this.send(json);
   }
 
@@ -209,9 +230,12 @@ public class Freigabe
       this.checkRequest();
 
       // Jede ID nur einmal - sonst wuerde derselbe Auftrag doppelt gesendet
-      final Set<Long> transferIds = Eingabe.ids(this.request.getParameterValues("id"));
-      final Set<Long> debitIds = Eingabe.ids(this.request.getParameterValues("last"));
-      final Set<Long> collectiveIds = Eingabe.ids(this.request.getParameterValues("sammel"));
+      final Map<Long,String> transferRefs = Eingabe.refs(this.request.getParameterValues("id"));
+      final Map<Long,String> debitRefs = Eingabe.refs(this.request.getParameterValues("last"));
+      final Map<Long,String> collectiveRefs = Eingabe.refs(this.request.getParameterValues("sammel"));
+      final Set<Long> transferIds = transferRefs.keySet();
+      final Set<Long> debitIds = debitRefs.keySet();
+      final Set<Long> collectiveIds = collectiveRefs.keySet();
       if (transferIds.isEmpty() && debitIds.isEmpty() && collectiveIds.isEmpty())
         throw new ApplicationException(i18n.tr("Kein Auftrag ausgew\u00e4hlt"));
 
@@ -228,7 +252,7 @@ public class Freigabe
         final Map<SynchronizeBackend,List<SynchronizeJob>> jobs = new LinkedHashMap<>();
         for (Long id:transferIds)
         {
-          final AuslandsUeberweisung u = load(AuslandsUeberweisung.class,id);
+          final AuslandsUeberweisung u = load(AuslandsUeberweisung.class,id,transferRefs.get(id));
           // Terminueberweisungen duerfen vor dem Termin gesendet werden, die Bank fuehrt sie am Termin aus
           if (u.isTerminUeberweisung())
             Eingabe.checkTermin(true,u.getTermin(),today);
@@ -238,7 +262,7 @@ public class Freigabe
         }
         for (Long id:debitIds)
         {
-          final SepaLastschrift l = load(SepaLastschrift.class,id);
+          final SepaLastschrift l = load(SepaLastschrift.class,id,debitRefs.get(id));
           if (!l.ueberfaellig())
             throw new ApplicationException(i18n.tr("Lastschrift {0} ist noch nicht f\u00e4llig",id.toString()));
           addJob(jobs,engine,SynchronizeJobSepaLastschrift.class,l.getKonto(),l);
@@ -248,6 +272,8 @@ public class Freigabe
           final SepaSammelLastschrift l = (SepaSammelLastschrift) Settings.getDBService().createObject(SepaSammelLastschrift.class,id.toString());
           if (l.isNewObject() || l.ausgefuehrt() || !l.ueberfaellig())
             throw new ApplicationException(i18n.tr("Sammellastschrift {0} fehlt, ist ausgef\u00fchrt oder noch nicht f\u00e4llig",id.toString()));
+          if (!fp(l).equals(collectiveRefs.get(id)))
+            throw new ApplicationException(i18n.tr("Sammellastschrift {0} hat sich ge\u00e4ndert, bitte Auswahl pr\u00fcfen",id.toString()));
           addJob(jobs,engine,SynchronizeJobSepaSammelLastschrift.class,l.getKonto(),l);
         }
 
@@ -274,7 +300,8 @@ public class Freigabe
     try
     {
       this.checkRequest();
-      final Set<Long> ids = Eingabe.ids(this.request.getParameterValues("id"));
+      final Map<Long,String> refs = Eingabe.refs(this.request.getParameterValues("id"));
+      final Set<Long> ids = refs.keySet();
       if (ids.isEmpty())
         throw new ApplicationException(i18n.tr("Keine \u00dcberweisung ausgew\u00e4hlt"));
       final Date today = Eingabe.today();
@@ -292,7 +319,9 @@ public class Freigabe
         final List<AuslandsUeberweisung> list = new ArrayList<>();
         for (Long id:ids)
         {
-          final AuslandsUeberweisung u = load(AuslandsUeberweisung.class,id);
+          final AuslandsUeberweisung u = load(AuslandsUeberweisung.class,id,refs.get(id));
+          if (typ != null && u.isUmbuchung())
+            throw new ApplicationException(i18n.tr("\u00dcberweisung {0} ist eine Umbuchung, ihr Typ ist nicht \u00e4nderbar",id.toString()));
           if (typ != null)
           {
             u.setTerminUeberweisung(typ == Eingabe.Typ.termin);
@@ -315,7 +344,7 @@ public class Freigabe
   }
 
   /**
-   * Fasst Einzellastschriften zu Sammellastschriften zusammen, je Konto, Sequenztyp, Lastschriftart und Faelligkeit
+   * Fasst Einzellastschriften zu Sammellastschriften zusammen, je Konto, Sequenztyp, Lastschriftart, Faelligkeit und Ausfuehrungstag
    * (wie Hibiscus' SepaLastschriftMerger, der einen Desktop-Dialog braucht). Die Einzellastschriften werden geloescht,
    * sonst wuerde derselbe Betrag doppelt eingezogen. Alles in einer Transaktion.
    * @throws Exception
@@ -325,7 +354,8 @@ public class Freigabe
     try
     {
       this.checkRequest();
-      final Set<Long> ids = Eingabe.ids(this.request.getParameterValues("last"));
+      final Map<Long,String> refs = Eingabe.refs(this.request.getParameterValues("last"));
+      final Set<Long> ids = refs.keySet();
       if (ids.isEmpty())
         throw new ApplicationException(i18n.tr("Keine Lastschrift ausgew\u00e4hlt"));
 
@@ -339,39 +369,48 @@ public class Freigabe
         final Map<String,List<SepaLastschrift>> groups = new LinkedHashMap<>();
         for (Long id:ids)
         {
-          final SepaLastschrift l = load(SepaLastschrift.class,id);
+          final SepaLastschrift l = load(SepaLastschrift.class,id,refs.get(id));
           if (l.getSequenceType() == null || l.getType() == null || l.getTargetDate() == null)
             throw new ApplicationException(i18n.tr("Lastschrift {0}: Sequenztyp, Art oder F\u00e4lligkeit fehlt",id.toString()));
-          final String key = l.getKonto().getID() + "/" + l.getSequenceType().name() + "/" + l.getType().name() + "/" + df.format(l.getTargetDate());
+          // Auch nach Ausfuehrungstag gruppieren: sonst wuerde eine spaeter terminierte Lastschrift mit der frueheren gesendet
+          final String key = l.getKonto().getID() + "/" + l.getSequenceType().name() + "/" + l.getType().name() + "/" + df.format(l.getTargetDate()) +
+                             "/" + (l.getTermin() != null ? df.format(l.getTermin()) : "");
           groups.computeIfAbsent(key,k -> new ArrayList<>()).add(l);
         }
 
-        // Transaktion an der ersten neuen Sammellastschrift wie im Hibiscus-Merger, nicht an einer Einzellastschrift, die geloescht wird
+        // Phase 1: alle Sammellastschriften und Buchungen in einer Transaktion anlegen. Kein delete() in dieser Phase:
+        // Hibiscus' delete() committet intern (DBPropertyUtil -> executeUpdate) und wuerde die Transaktion vorzeitig abschliessen.
+        // Die Sammellastschriften werden geparkt (Termin PARKED, Bezeichnung mit Warnung): bricht der Prozess vor Phase 3 ab,
+        // ist keine von ihnen faellig, also nichts doppelt einziehbar.
+        final List<SepaLastschrift> singles = new ArrayList<>();
+        final List<String> singleIds = new ArrayList<>();
+        final List<SepaSammelLastBuchung> bookings = new ArrayList<>();
+        final List<SepaSammelLastschrift> collectives = new ArrayList<>();
+        final List<Date> termine = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
         SepaSammelLastschrift tx = null;
         try
         {
           for (List<SepaLastschrift> group:groups.values())
           {
             final SepaLastschrift g = group.get(0);
-            Date termin = g.getTermin();
-            for (SepaLastschrift l:group)
-            {
-              if (l.getTermin() != null && (termin == null || l.getTermin().before(termin)))
-                termin = l.getTermin();
-            }
+            final String name = i18n.tr("{0} {1} vom {2}",g.getSequenceType().getDescription(),g.getType().getDescription(),df.format(new Date()));
             final SepaSammelLastschrift s = (SepaSammelLastschrift) Settings.getDBService().createObject(SepaSammelLastschrift.class,null);
             s.setKonto(g.getKonto());
-            s.setBezeichnung(i18n.tr("{0} {1} vom {2}",g.getSequenceType().getDescription(),g.getType().getDescription(),df.format(new Date())));
+            s.setBezeichnung(i18n.tr("IN ARBEIT - pr\u00fcfen: {0}",name));
             s.setSequenceType(g.getSequenceType());
             s.setType(g.getType());
             s.setTargetDate(g.getTargetDate());
-            s.setTermin(termin);
+            s.setTermin(PARKED);
             if (tx == null)
             {
               tx = s;
               tx.transactionBegin();
             }
             s.store();
+            collectives.add(s);
+            termine.add(g.getTermin());
+            names.add(name);
             for (SepaLastschrift l:group)
             {
               final SepaSammelLastBuchung b = s.createBuchung();
@@ -385,8 +424,9 @@ public class Freigabe
               b.setSignatureDate(l.getSignatureDate());
               b.setZweck(l.getZweck());
               b.store();
-              Logger.info("web merge: debit " + l.getID() + " (" + f(l.getBetrag()) + ") -> collective debit " + s.getID());
-              l.delete();
+              singles.add(l);
+              singleIds.add(l.getID());
+              bookings.add(b);
             }
             created++;
           }
@@ -398,6 +438,89 @@ public class Freigabe
             tx.transactionRollback();
           throw e;
         }
+
+        // Phase 2: Einzellastschriften loeschen (jedes delete() committet). Bei einem Fehler: Buchungen von Einzellastschriften,
+        // die noch existieren, wieder entfernen; Buchungen von bereits geloeschten bleiben (sonst ginge der Auftrag verloren).
+        final List<String> doubled = new ArrayList<>();
+        final List<String> unchanged = new ArrayList<>();
+        int done = 0;
+        try
+        {
+          for (;done < singles.size();done++)
+            singles.get(done).delete();
+        }
+        catch (Exception e)
+        {
+          Logger.error("web merge: deleting single debit " + singleIds.get(done) + " failed, checking the remaining ones",e);
+          for (int i = done;i < singles.size();i++)
+          {
+            final String id = singleIds.get(i);
+            final SepaSammelLastBuchung b = bookings.get(i);
+            try
+            {
+              if (!exists(id))
+                continue; // Einzellastschrift ist weg, die Buchung bleibt der einzige Auftrag
+              b.delete();
+              unchanged.add(id);
+            }
+            catch (Exception e2)
+            {
+              Logger.error("web merge: debit " + id + " AND its booking " + b.getID() + " are both open",e2);
+              doubled.add(id);
+            }
+          }
+        }
+        for (int i = 0;i < singles.size();i++)
+        {
+          if (!unchanged.contains(singleIds.get(i)) && !doubled.contains(singleIds.get(i)))
+            Logger.info("web merge: debit " + singleIds.get(i) + " (" + f(bookings.get(i).getBetrag()) + ") -> collective debit " + bookings.get(i).getSammelTransfer().getID());
+        }
+
+        // Phase 3: Sammellastschriften freigeben (echter Termin und Name), in einer Transaktion. Eine Sammellastschrift mit
+        // einem Doppel bleibt geparkt; eine ohne Buchungen wird entfernt.
+        SepaSammelLastschrift tx3 = null;
+        try
+        {
+          for (int c = 0;c < collectives.size();c++)
+          {
+            final SepaSammelLastschrift s = collectives.get(c);
+            boolean hasDouble = false;
+            for (int i = 0;i < singles.size();i++)
+            {
+              if (doubled.contains(singleIds.get(i)) && bookings.get(i).getSammelTransfer().getID().equals(s.getID()))
+                hasDouble = true;
+            }
+            if (hasDouble || s.getBuchungen().isEmpty())
+              continue;
+            if (tx3 == null)
+            {
+              tx3 = s;
+              tx3.transactionBegin();
+            }
+            s.setTermin(termine.get(c));
+            s.setBezeichnung(names.get(c));
+            s.store();
+          }
+          if (tx3 != null)
+            tx3.transactionCommit();
+        }
+        catch (Exception e)
+        {
+          if (tx3 != null)
+            tx3.transactionRollback();
+          Logger.error("web merge: releasing collective debits failed, they stay parked",e);
+          throw new ApplicationException(i18n.tr("Sammellastschrift(en) angelegt, aber noch als IN ARBEIT geparkt. Bitte pr\u00fcfen."));
+        }
+        for (SepaSammelLastschrift s:collectives)
+        {
+          if (s.getBuchungen().isEmpty())
+            s.delete();
+        }
+
+        if (!doubled.isEmpty())
+          throw new ApplicationException(i18n.tr("ACHTUNG: Lastschrift(en) {0} sind zus\u00e4tzlich in einer geparkten Sammellastschrift (IN ARBEIT) enthalten. Erst bereinigen.",String.join(", ",doubled)));
+        if (!unchanged.isEmpty())
+          throw new ApplicationException(i18n.tr("Zusammenfassen teilweise fehlgeschlagen: Lastschrift(en) {0} unver\u00e4ndert, Rest zusammengefasst",String.join(", ",unchanged)));
       }
       this.send(result(true,i18n.tr("{0} Lastschrift(en) zu {1} Sammellastschrift(en) zusammengefasst",String.valueOf(ids.size()),String.valueOf(created))));
     }
@@ -418,7 +541,7 @@ public class Freigabe
     {
       this.checkRequest();
       final boolean debit = "last".equals(this.request.getParameter("kind"));
-      final Set<Long> ids = Eingabe.ids(new String[]{this.request.getParameter("id")});
+      final Map<Long,String> refs = Eingabe.refs(new String[]{this.request.getParameter("id")});
       final Date today = Eingabe.today();
       final BigDecimal betrag = Eingabe.betrag(this.request.getParameter("betrag"));
       final String zweck = Eingabe.zweck(this.request.getParameter("zweck"));
@@ -432,8 +555,8 @@ public class Freigabe
         if (this.isRunning())
           throw new ApplicationException(i18n.tr("Synchronisierung l\u00e4uft bereits"));
 
-        final Long id = ids.iterator().next();
-        final BaseUeberweisung u = debit ? load(SepaLastschrift.class,id) : load(AuslandsUeberweisung.class,id);
+        final Long id = refs.keySet().iterator().next();
+        final BaseUeberweisung u = debit ? load(SepaLastschrift.class,id,refs.get(id)) : load(AuslandsUeberweisung.class,id,refs.get(id));
         final String before = f(u.getBetrag()) + " / " + u.getZweck() + " / " + iso(u.getTermin());
         u.setBetrag(betrag.doubleValue());
         u.setZweck(zweck);
@@ -472,6 +595,117 @@ public class Freigabe
   }
 
   /**
+   * Gibt die offene VoP-Entscheidung frei und merkt sich die Beinahe-Uebereinstimmungen in der Freigabeliste.
+   * @throws Exception
+   */
+  public void remember() throws Exception
+  {
+    try
+    {
+      this.checkRequest();
+      final String id = this.request.getParameter("vop");
+      final Freigaben.Entscheidung e = Freigaben.getPending();
+      if (e == null || id == null || !id.equals(e.getId()))
+        throw new ApplicationException(i18n.tr("Die Entscheidung ist nicht mehr offen"));
+      final List<Freigabeliste.Eintrag> learned = Freigabeliste.learn(e.getItems(),de.willuhn.jameica.hbci.payment.Settings.isVoPApproveNotApplicable(),new Date());
+      // Volle Liste vor der Freigabe melden, damit "merken" nicht still scheitert
+      synchronized (Freigabeliste.class)
+      {
+        Freigabeliste.checkSize(Freigabeliste.add(Freigabeliste.load(),learned));
+      }
+      // Erst freigeben, dann merken: eine abgelaufene Entscheidung hinterlaesst keinen Eintrag
+      if (!Freigaben.decide(id,true))
+        throw new ApplicationException(i18n.tr("Die Entscheidung ist nicht mehr offen"));
+      try
+      {
+        synchronized (Freigabeliste.class)
+        {
+          Freigabeliste.store(Freigabeliste.add(Freigabeliste.load(),learned));
+        }
+      }
+      catch (ApplicationException full)
+      {
+        Logger.warn("VoP decision in web frontend: approved, but not remembered: " + full.getMessage());
+        this.send(result(true,i18n.tr("Auftrag freigegeben, Kombination NICHT gemerkt: {0}",full.getMessage())));
+        return;
+      }
+      for (Freigabeliste.Eintrag l:learned)
+        Logger.info("VoP decision in web frontend: approved and remembered " + l.getIban() + " / " + l.getName() + " / " + l.getBank());
+      this.send(result(true,i18n.tr("Auftrag freigegeben, {0} Kombination(en) gemerkt",String.valueOf(learned.size()))));
+    }
+    catch (ApplicationException ae)
+    {
+      this.send(result(false,ae.getMessage()));
+    }
+  }
+
+  /**
+   * Legt einen manuellen Eintrag (IBAN + Name) in der Freigabeliste an.
+   * @throws Exception
+   */
+  public void allowAdd() throws Exception
+  {
+    try
+    {
+      this.checkRequest();
+      final Freigabeliste.Eintrag a = Freigabeliste.manuell(this.request.getParameter("iban"),this.request.getParameter("name"),new Date());
+      synchronized (Freigabeliste.class)
+      {
+        Freigabeliste.store(Freigabeliste.add(Freigabeliste.load(),List.of(a)));
+      }
+      Logger.info("VoP allow list: added " + a.getIban() + " / " + a.getName());
+      this.send(result(true,i18n.tr("Bankverbindung in die Freigabeliste aufgenommen")));
+    }
+    catch (ApplicationException ae)
+    {
+      this.send(result(false,ae.getMessage()));
+    }
+  }
+
+  /**
+   * Entfernt einen Eintrag aus der Freigabeliste.
+   * @throws Exception
+   */
+  public void allowRemove() throws Exception
+  {
+    try
+    {
+      this.checkRequest();
+      final String key = this.request.getParameter("eintrag");
+      synchronized (Freigabeliste.class)
+      {
+        final List<Freigabeliste.Eintrag> list = Freigabeliste.load();
+        if (key == null || !list.removeIf(a -> a.toString().equals(key)))
+          throw new ApplicationException(i18n.tr("Eintrag nicht gefunden"));
+        Freigabeliste.store(list);
+      }
+      Logger.info("VoP allow list: removed " + key.replace('\t','/'));
+      this.send(result(true,i18n.tr("Eintrag entfernt")));
+    }
+    catch (ApplicationException ae)
+    {
+      this.send(result(false,ae.getMessage()));
+    }
+  }
+
+  /**
+   * @param e offene Entscheidung.
+   * @return true, wenn sie per "merken" freigegeben werden kann.
+   */
+  private static boolean learnable(Freigaben.Entscheidung e)
+  {
+    try
+    {
+      Freigabeliste.learn(e.getItems(),de.willuhn.jameica.hbci.payment.Settings.isVoPApproveNotApplicable(),new Date());
+      return true;
+    }
+    catch (ApplicationException ae)
+    {
+      return false;
+    }
+  }
+
+  /**
    * Uebernimmt die Entscheidung.
    * @param approve true bei Freigabe.
    * @throws Exception
@@ -496,17 +730,69 @@ public class Freigabe
    * Laedt einen offenen Auftrag.
    * @param type Typ des Auftrags.
    * @param id ID des Auftrags.
+   * @param fp Fingerabdruck, den die Seite angezeigt hat.
    * @return der Auftrag.
-   * @throws Exception wenn er fehlt oder schon ausgefuehrt ist.
+   * @throws Exception wenn er fehlt, schon ausgefuehrt ist oder sich seit der Anzeige geaendert hat.
    */
-  private static <T extends BaseUeberweisung> T load(Class<T> type, Long id) throws Exception
+  private static <T extends BaseUeberweisung> T load(Class<T> type, Long id, String fp) throws Exception
   {
     final T u = type.cast(Settings.getDBService().createObject(type,id.toString()));
     if (u.isNewObject())
       throw new ApplicationException(i18n.tr("Auftrag {0} nicht gefunden",id.toString()));
     if (u.ausgefuehrt())
       throw new ApplicationException(i18n.tr("Auftrag {0} ist bereits ausgef\u00fchrt",id.toString()));
+    if (!fp(u).equals(fp))
+      throw new ApplicationException(i18n.tr("Auftrag {0} hat sich ge\u00e4ndert, bitte Auswahl pr\u00fcfen",id.toString()));
     return u;
+  }
+
+  /**
+   * @param u Auftrag.
+   * @return Fingerabdruck ueber alle Werte, die die Seite zeigt oder die das Senden bestimmen.
+   * @throws RemoteException
+   */
+  private static String fp(BaseUeberweisung u) throws RemoteException
+  {
+    if (u instanceof AuslandsUeberweisung)
+    {
+      final AuslandsUeberweisung a = (AuslandsUeberweisung) u;
+      return Eingabe.fp("ueb",u.getID(),u.getKonto().getID(),u.getGegenkontoName(),u.getGegenkontoNummer(),f(u.getBetrag()),u.getZweck(),iso(u.getTermin()),
+                        a.isTerminUeberweisung(),a.isInstantPayment(),a.isUmbuchung());
+    }
+    final SepaLastschrift l = (SepaLastschrift) u;
+    return Eingabe.fp("last",u.getID(),u.getKonto().getID(),u.getGegenkontoName(),u.getGegenkontoNummer(),f(u.getBetrag()),u.getZweck(),iso(u.getTermin()),
+                      iso(l.getTargetDate()),l.getMandateId(),l.getSequenceType(),l.getType());
+  }
+
+  /**
+   * @param s Sammellastschrift.
+   * @return Fingerabdruck ueber Kopf und alle Buchungen.
+   * @throws RemoteException
+   */
+  private static String fp(SepaSammelLastschrift s) throws RemoteException
+  {
+    final List<Object> parts = new ArrayList<>(List.of("sammel",s.getID(),s.getKonto().getID(),str(s.getBezeichnung()),iso(s.getTermin()),iso(s.getTargetDate()),
+                                                       String.valueOf(s.getSequenceType()),String.valueOf(s.getType())));
+    for (SepaSammelLastBuchung b:s.getBuchungen())
+    {
+      parts.add(b.getID());
+      parts.add(str(b.getGegenkontoName()));
+      parts.add(str(b.getGegenkontoNummer()));
+      parts.add(f(b.getBetrag()));
+    }
+    return Eingabe.fp(parts.toArray());
+  }
+
+  /**
+   * @param id ID einer Einzellastschrift.
+   * @return true, wenn sie noch in der Datenbank steht.
+   * @throws Exception
+   */
+  private static boolean exists(String id) throws Exception
+  {
+    final DBIterator it = Settings.getDBService().createList(SepaLastschrift.class);
+    it.addFilter("id = ?",Integer.valueOf(id));
+    return it.hasNext();
   }
 
   /**
@@ -565,7 +851,8 @@ public class Freigabe
       .put("iban",str(u.getGegenkontoNummer()))
       .put("betrag",f.getBetrag(u.getBetrag()))
       .put("wert",f(u.getBetrag()))
-      .put("zweck",str(u.getZweck()));
+      .put("zweck",str(u.getZweck()))
+      .put("fp",fp(u));
   }
 
   /**

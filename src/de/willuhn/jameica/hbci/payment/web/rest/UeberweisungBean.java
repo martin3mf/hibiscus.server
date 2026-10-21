@@ -18,6 +18,7 @@ import de.willuhn.datasource.rmi.ObjectNotFoundException;
 import de.willuhn.jameica.hbci.HBCI;
 import de.willuhn.jameica.hbci.Settings;
 import de.willuhn.jameica.hbci.payment.Plugin;
+import de.willuhn.jameica.hbci.payment.Freigaben;
 import de.willuhn.jameica.hbci.payment.util.JsonUtil;
 import de.willuhn.jameica.hbci.rmi.AuslandsUeberweisung;
 import de.willuhn.jameica.hbci.rmi.HBCIDBService;
@@ -69,9 +70,13 @@ public class UeberweisungBean implements AutoRestBean
   @Path("/hibiscus/ueberweisung/delete/([0-9]{1,8})$")
   public Object delete(String id) throws Exception
   {
-    AuslandsUeberweisung u = (AuslandsUeberweisung) Settings.getDBService().createObject(AuslandsUeberweisung.class,id);
-    u.delete();
-    return JsonUtil.toJson(u);
+    // Gemeinsame Sperre mit der Freigabe-Seite: delete() committet intern auf der gemeinsamen JDBC-Verbindung
+    synchronized (Freigaben.LOCK)
+    {
+      AuslandsUeberweisung u = (AuslandsUeberweisung) Settings.getDBService().createObject(AuslandsUeberweisung.class,id);
+      u.delete();
+      return JsonUtil.toJson(u);
+    }
   }
 
   /**
@@ -148,7 +153,11 @@ public class UeberweisungBean implements AutoRestBean
       }
     }
     
-    u.store();
+    // Gemeinsame Sperre mit der Freigabe-Seite: sonst landet dieser Insert in deren offener Transaktion
+    synchronized (Freigaben.LOCK)
+    {
+      u.store();
+    }
     return JsonUtil.toJson(u);
   }
 

@@ -40,8 +40,8 @@
               </tr>
               #foreach($k in $p.konten)
                 <tr>
-                  <td>$k.bezeichnung</td>
-                  <td>$k.kontonummer</td>
+                  <td>$format.escape($k.bezeichnung)</td>
+                  <td>$format.escape($k.kontonummer)</td>
                   <td style="text-align:right">$format.getSaldoText($k)</td>
                 </tr>
               #end

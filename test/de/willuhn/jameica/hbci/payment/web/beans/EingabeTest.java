@@ -14,9 +14,19 @@ public class EingabeTest
     final SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd");
     final Date today = df.parse("2026-10-21");
 
-    check(Eingabe.ids(new String[]{"042","7"}).toString().equals("[42, 7]"), "ids canonical");
-    check(fails(() -> Eingabe.ids(new String[]{"42","042"})), "duplicate id refused");
-    check(fails(() -> Eingabe.ids(new String[]{"4x"})), "non-numeric id refused");
+    final String fp = Eingabe.fp("ueb","42","Name",1.5);
+    check(fp.matches("[0-9a-f]{16}"), "fp format");
+    check(fp.equals(Eingabe.fp("ueb","42","Name",1.5)), "fp stable");
+    check(!fp.equals(Eingabe.fp("ueb","42","Name",1.6)), "fp changes with amount");
+    check(!Eingabe.fp("a","bc").equals(Eingabe.fp("ab","c")), "fp separates parts");
+    check(Eingabe.refs(new String[]{"042:" + fp,"7:" + fp}).keySet().toString().equals("[42, 7]"), "refs canonical");
+    check(Eingabe.refs(new String[]{"42:" + fp}).get(42L).equals(fp), "refs keep fingerprint");
+    check(fails(() -> Eingabe.refs(new String[]{"42:" + fp,"042:" + fp})), "duplicate id refused");
+    check(fails(() -> Eingabe.refs(new String[]{"42"})), "id without fingerprint refused");
+    check(fails(() -> Eingabe.refs(new String[]{"4x:" + fp})), "non-numeric id refused");
+    check(fails(() -> Eingabe.refs(new String[]{"42:" + fp.toUpperCase()})), "bad fingerprint refused");
+    check(fails(() -> Eingabe.refs(new String[]{null})), "null ref refused");
+    check(Eingabe.refs(null).isEmpty(), "no refs");
 
     check(Eingabe.betrag("1234,5").compareTo(new BigDecimal("1234.50")) == 0, "comma decimal");
     check(Eingabe.betrag("0.01").compareTo(new BigDecimal("0.01")) == 0, "dot decimal");

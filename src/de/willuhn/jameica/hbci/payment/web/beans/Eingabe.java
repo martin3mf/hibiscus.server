@@ -11,12 +11,14 @@
 package de.willuhn.jameica.hbci.payment.web.beans;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
-import java.util.LinkedHashSet;
-import java.util.Set;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import de.willuhn.util.ApplicationException;
 
@@ -31,28 +33,49 @@ public class Eingabe
   public enum Typ { normal, termin, instant }
 
   /**
-   * @param ids die IDs aus dem Request.
-   * @return die IDs numerisch kanonisiert ("042" = "42"), jede genau einmal.
-   * @throws ApplicationException bei ungueltigen oder doppelten IDs.
+   * IDs werden in der Datenbank wiederverwendet (MAX(id)+1). Die Seite sendet deshalb "id:fingerabdruck",
+   * damit ein geloeschter und neu angelegter Auftrag mit derselben ID nicht unbemerkt gesendet wird.
+   * @param refs Referenzen aus dem Request.
+   * @return ID -> Fingerabdruck, jede ID genau einmal.
+   * @throws ApplicationException bei ungueltigen oder doppelten Referenzen.
    */
-  public static Set<Long> ids(String[] ids) throws ApplicationException
+  public static Map<Long,String> refs(String[] refs) throws ApplicationException
   {
-    final Set<Long> unique = new LinkedHashSet<>();
-    if (ids == null)
-      return unique;
-    for (String id:ids)
+    final Map<Long,String> result = new LinkedHashMap<>();
+    if (refs == null)
+      return result;
+    for (String r:refs)
     {
-      try
-      {
-        if (!unique.add(Long.valueOf(id.trim())))
-          throw new ApplicationException("Auftrag mehrfach ausgew\u00e4hlt");
-      }
-      catch (NumberFormatException nfe)
-      {
-        throw new ApplicationException("Ung\u00fcltige Auftrags-ID");
-      }
+      if (r == null || !r.trim().matches("\\d{1,18}:[0-9a-f]{16}"))
+        throw new ApplicationException("Ung\u00fcltige Auftragsreferenz");
+      final String[] p = r.trim().split(":");
+      if (result.put(Long.valueOf(p[0]),p[1]) != null)
+        throw new ApplicationException("Auftrag mehrfach ausgew\u00e4hlt");
     }
-    return unique;
+    return result;
+  }
+
+  /**
+   * @param parts die Werte, die einen Auftrag ausmachen.
+   * @return die ersten 16 Hex-Zeichen von SHA-256 ueber die Werte.
+   */
+  public static String fp(Object... parts)
+  {
+    try
+    {
+      final StringBuilder sb = new StringBuilder();
+      for (Object o:parts)
+        sb.append(o).append('\u0001');
+      final byte[] h = MessageDigest.getInstance("SHA-256").digest(sb.toString().getBytes(StandardCharsets.UTF_8));
+      final StringBuilder hex = new StringBuilder();
+      for (int i = 0;i < 8;i++)
+        hex.append(String.format("%02x",h[i]));
+      return hex.toString();
+    }
+    catch (java.security.NoSuchAlgorithmException e)
+    {
+      throw new IllegalStateException(e);
+    }
   }
 
   /**

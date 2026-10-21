@@ -9,9 +9,9 @@
     #foreach($j in $joblist)
       <tr>
         #if($j.recurring)
-          <td>$j.name</td>
+          <td>$format.escape($j.name)</td>
         #else
-          <td><b>$j.name</b></td>
+          <td><b>$format.escape($j.name)</b></td>
         #end
       </tr>
     #end

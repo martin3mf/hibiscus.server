@@ -30,8 +30,8 @@
 
     #foreach($line in $message.log)
       <tr onmouseover="change_to(this);" onmouseout="change_back(this);" class="${line.get("level")}">
-        <td style="white-space:nowrap;">${line.get("date")}</td>
-        <td><pre>${line.get("class")}</pre></td>
+        <td style="white-space:nowrap;">$format.escape($line.get("date"))</td>
+        <td><pre>$format.escape($line.get("class"))</pre></td>
         <td><pre>${line.get("text")}</pre></td>
       </tr>
     #end

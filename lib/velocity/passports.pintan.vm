@@ -66,7 +66,7 @@
     #if($list.size() > 0)
       #foreach($p in $list)
         <tr onmouseover="change_to(this);" onmouseout="change_back(this);">
-          <td>$p.bezeichnung</td>
+          <td>$format.escape($p.bezeichnung)</td>
           <td>$p.getURL()</td>
           <td>
             <table class="inner">
@@ -77,8 +77,8 @@
               </tr>
               #foreach($k in $p.konten)
                 <tr>
-                  <td>$k.bezeichnung</td>
-                  <td>$k.kontonummer</td>
+                  <td>$format.escape($k.bezeichnung)</td>
+                  <td>$format.escape($k.kontonummer)</td>
                   <td style="text-align:right">$format.getSaldoText($k)</td>
                 </tr>
               #end

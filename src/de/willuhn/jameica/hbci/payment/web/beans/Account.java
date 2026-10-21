@@ -19,6 +19,7 @@ import de.willuhn.jameica.hbci.HBCIProperties;
 import de.willuhn.jameica.hbci.MetaKey;
 import de.willuhn.jameica.hbci.Settings;
 import de.willuhn.jameica.hbci.SynchronizeOptions;
+import de.willuhn.jameica.hbci.payment.Freigaben;
 import de.willuhn.jameica.hbci.payment.Plugin;
 import de.willuhn.jameica.hbci.rmi.Konto;
 import de.willuhn.jameica.hbci.rmi.Umsatz;
@@ -102,7 +103,11 @@ public class Account
   {
     try
     {
-      this.konto.delete();
+      // Gemeinsame Sperre mit der Freigabe-Seite: delete() committet intern auf der gemeinsamen JDBC-Verbindung
+      synchronized (Freigaben.LOCK)
+      {
+        this.konto.delete();
+      }
       Application.getMessagingFactory().sendMessage(new StatusBarMessage(i18n.tr("Konto und alle zugeordneten Umsätze/Aufträge gelöscht"),StatusBarMessage.TYPE_SUCCESS));
       response.sendRedirect("accounts.html");
     }
@@ -118,16 +123,20 @@ public class Account
    */
   public void store() throws RemoteException
   {
-    SynchronizeOptions options = this.getOptions();
-    options.setSyncSaldo(request.getParameter("saldo") != null);
-    options.setSyncKontoauszuege(request.getParameter("umsatz") != null);
-    options.setSyncSepaDauerauftraege(request.getParameter("sepadauer") != null);
-    options.setSyncAuslandsUeberweisungen(request.getParameter("foreign") != null);
-    options.setSyncSepaLastschriften(request.getParameter("sepalast") != null);
-    options.setSyncKontoauszuegePdf(request.getParameter("kontoauszug") != null);
+    // Gemeinsame Sperre mit der Freigabe-Seite: MetaKey.set() schreibt und committet auf der gemeinsamen JDBC-Verbindung
+    synchronized (Freigaben.LOCK)
+    {
+      SynchronizeOptions options = this.getOptions();
+      options.setSyncSaldo(request.getParameter("saldo") != null);
+      options.setSyncKontoauszuege(request.getParameter("umsatz") != null);
+      options.setSyncSepaDauerauftraege(request.getParameter("sepadauer") != null);
+      options.setSyncAuslandsUeberweisungen(request.getParameter("foreign") != null);
+      options.setSyncSepaLastschriften(request.getParameter("sepalast") != null);
+      options.setSyncKontoauszuegePdf(request.getParameter("kontoauszug") != null);
 
-    boolean camt = request.getParameter("camt") != null;
-    MetaKey.UMSATZ_CAMT.set(konto,Boolean.toString(camt));
+      boolean camt = request.getParameter("camt") != null;
+      MetaKey.UMSATZ_CAMT.set(konto,Boolean.toString(camt));
+    }
     Application.getMessagingFactory().sendMessage(new StatusBarMessage(i18n.tr("Synchronisierungsoptionen gespeichert"),StatusBarMessage.TYPE_SUCCESS));
   }
   

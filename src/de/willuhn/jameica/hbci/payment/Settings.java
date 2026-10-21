@@ -470,6 +470,24 @@ public class Settings
   }
   
   /**
+   * Liefert die Eintraege der VoP-Freigabeliste.
+   * @return die Eintraege im Format von {@link Freigabeliste.Eintrag#toString()}.
+   */
+  public static String[] getVoPAllowList()
+  {
+    return settings.getList("vop.allow",new String[0]);
+  }
+
+  /**
+   * Speichert die Eintraege der VoP-Freigabeliste.
+   * @param list die Eintraege.
+   */
+  public static void setVoPAllowList(String[] list)
+  {
+    settings.setAttribute("vop.allow",list);
+  }
+
+  /**
    * Liefert die Anzahl der Sekunden, die auf eine VoP-Entscheidung im Web-Frontend gewartet wird.
    * @return Wartezeit in Sekunden. 0 = nicht warten, sondern ablehnen.
    */

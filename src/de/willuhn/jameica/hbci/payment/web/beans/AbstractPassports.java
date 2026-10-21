@@ -19,6 +19,7 @@ import org.kapott.hbci.passport.HBCIPassport;
 import de.willuhn.jameica.hbci.PassportRegistry;
 import de.willuhn.jameica.hbci.Settings;
 import de.willuhn.jameica.hbci.passport.Passport;
+import de.willuhn.jameica.hbci.payment.Freigaben;
 import de.willuhn.jameica.hbci.payment.Plugin;
 import de.willuhn.jameica.hbci.rmi.Konto;
 import de.willuhn.jameica.hbci.server.Converter;
@@ -89,7 +90,11 @@ public abstract class AbstractPassports
           try
           {
             k.setPassportClass(getImplementationClass().getName()); // wir speichern den ausgewaehlten Passport.
-            k.store();
+            // Gemeinsame Sperre mit der Freigabe-Seite: sonst landet dieser Insert in deren offener Transaktion
+            synchronized (Freigaben.LOCK)
+            {
+              k.store();
+            }
             Logger.info("konto saved successfully");
           }
           catch (Exception e)

@@ -119,8 +119,13 @@ public class ExecuteServiceImpl extends UnicastRemoteObject implements ExecuteSe
       // Jobs ermitteln und starten unter der Sperre der Freigabe-Seite, damit sie keinen geladenen Auftrag aendert oder loescht
       synchronized (Freigaben.LOCK)
       {
-        List<SynchronizeJob> jobs = backend.getSynchronizeJobs(null);
-        if (jobs != null && jobs.size() > 0)
+        // Laeuft auf diesem Backend schon eine Sitzung (z.B. manuelle Ausfuehrung), Backend auslassen:
+        // sonst koennten Jobs mit Auftraegen entstehen, die diese Sitzung gleich als ausgefuehrt markiert
+        final boolean busy = backend.getCurrentSession() != null;
+        List<SynchronizeJob> jobs = busy ? null : backend.getSynchronizeJobs(null);
+        if (busy)
+          Logger.warn("backend " + backend.getName() + " already has a running session, skipping");
+        else if (jobs != null && jobs.size() > 0)
         {
           Logger.info("synchronizing backend " + backend.getName() + " with " + jobs.size() + " jobs");
           backend.execute(jobs);

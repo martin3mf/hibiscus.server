@@ -27,10 +27,7 @@
     </thead>
     <tbody id="vop-items"></tbody>
   </table>
-  <div style="margin-top:10px">
-    <button type="button" onclick="freigabe.decide('approve')">Auftrag dennoch ausf&uuml;hren</button>
-    <button type="button" onclick="freigabe.decide('reject')">Abbrechen</button>
-  </div>
+  <div style="margin-top:10px" id="vop-buttons"></div>
 </div>
 
 <div id="running" class="note" style="display:none"><b>Ausf&uuml;hrung l&auml;uft.</b> Bei einer Push-Freigabe bitte in SecureGo plus best&auml;tigen.</div>
@@ -126,6 +123,31 @@
   <button type="button" class="execute" onclick="freigabe.execute('sammel')">Ausgew&auml;hlte Sammellastschriften einziehen</button>
 </div>
 
+<h2>Freigabeliste Namensabgleich</h2>
+
+<p>Manuelle Eintr&auml;ge (IBAN + Name im Auftrag) geben &bdquo;Beinahe-&Uuml;bereinstimmung&ldquo; und &bdquo;Keine &Uuml;bereinstimmung&ldquo; automatisch frei.
+Gemerkte Kombinationen geben nur &bdquo;Beinahe-&Uuml;bereinstimmung&ldquo; mit demselben Namen laut Bank frei.</p>
+
+<div style="margin-bottom:10px">
+  IBAN <input type="text" id="allow-iban" size="34">
+  Name <input type="text" id="allow-name" size="40" maxlength="140">
+  <button type="button" onclick="freigabe.allowAdd()">Aufnehmen</button>
+</div>
+
+<table class="data">
+  <thead>
+    <tr>
+      <th>Art</th>
+      <th>IBAN</th>
+      <th>Name im Auftrag</th>
+      <th>Name laut Bank</th>
+      <th>Seit</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="allow"><tr><td colspan="6">Lade ...</td></tr></tbody>
+</table>
+
 <div style="margin-top:20px">
   #parse("includes/log.vm")
 </div>
@@ -134,11 +156,12 @@
 var freigabe = (function()
 {
   var token   = "$c.getToken()";
-  var vopId   = null;
+  var vopId   = null; // Entscheidung, fuer die die Buttons gebaut sind
   var last    = {};
   var data    = {};
   var editing = null;
   var busy    = false;
+  var queued  = false;
   var TYP     = {normal: "Standard", termin: "Termin", instant: "Echtzeit", umbuchung: "Umbuchung"};
 
   function el(id) { return document.getElementById(id); }
@@ -200,8 +223,8 @@ var freigabe = (function()
       var cb = document.createElement("input");
       cb.type = "checkbox";
       cb.name = name;
-      cb.value = u.id;
-      cb.checked = !!checked[u.id];
+      cb.value = u.id + ":" + u.fp; // ID + Fingerabdruck: eine wiederverwendete ID uebernimmt keine Auswahl
+      cb.checked = !!checked[cb.value];
       var cells = [cb].concat(cols(u));
       if (name != "sammel")
       {
@@ -224,7 +247,30 @@ var freigabe = (function()
 
     var p = s.pending;
     el("vop").style.display = p ? "" : "none";
-    vopId = p ? p.id : null;
+    // Buttons je Entscheidung neu bauen, mit fest gebundener ID: ein laufender Klick kann nicht auf eine neue Entscheidung wechseln
+    if ((p ? p.id : null) !== vopId)
+    {
+      vopId = p ? p.id : null;
+      var buttons = el("vop-buttons");
+      buttons.innerHTML = "";
+      if (p)
+      {
+        var id = p.id;
+        var add = function(text, action)
+        {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.textContent = text;
+          b.onclick = function() { post([["action", action], ["vop", id]]); };
+          buttons.appendChild(b);
+          buttons.appendChild(document.createTextNode(" "));
+        };
+        add("Auftrag dennoch ausf\u00fchren", "approve");
+        if (p.learnable)
+          add("Ausf\u00fchren und diese Kombination immer akzeptieren", "remember");
+        add("Abbrechen", "reject");
+      }
+    }
     if (p)
     {
       el("vop-deadline").textContent = p.deadline;
@@ -235,28 +281,78 @@ var freigabe = (function()
       p.items.forEach(function(i) { items.appendChild(row([i.status, i.original, i.name, i.iban, i.amount, i.usage], 4)); });
     }
 
+    renderAllow(s.allow);
+
     var none = el("showall").checked ? "Keine offenen " : "Keine f\u00e4lligen ";
     table("transfers", "id", s.transfers, function(u) { return [u.termin, TYP[u.typ] || u.typ, u.name, u.iban, u.betrag, u.zweck]; }, 5, none + "\u00dcberweisungen", s.force);
     table("collective", "sammel", s.collective, function(u) { return [u.termin, u.ziel, u.bezeichnung, String(u.anzahl), u.summe]; }, 5, none + "Sammellastschriften", s.force);
     table("debits", "last", s.debits, function(u) { return [u.termin, u.ziel, u.name, u.iban, u.betrag, u.mandat + " (" + u.sequenz + ")", u.zweck]; }, 5, none + "Lastschriften", s.force);
   }
 
+  function renderAllow(list)
+  {
+    var json = JSON.stringify(list);
+    if (json == last.allow)
+      return;
+    last.allow = json;
+    var body = el("allow");
+    body.innerHTML = "";
+    if (list.length == 0)
+      body.appendChild(row(["Keine Eintr\u00e4ge"], -1));
+    list.forEach(function(a)
+    {
+      var del = document.createElement("a");
+      del.href = "#";
+      del.textContent = "entfernen";
+      del.onclick = function()
+      {
+        if (window.confirm("Eintrag " + a.iban + " / " + a.name + " entfernen?"))
+          post([["action", "allowRemove"], ["eintrag", a.key]]);
+        return false;
+      };
+      body.appendChild(row([a.manuell ? "manuell" : "gemerkt", a.iban, a.name, a.bank, a.datum, del], -1));
+    });
+  }
+
   function refresh(force)
   {
+    // Laeuft schon eine Abfrage, eine erzwungene merken und danach nachholen; eine Antwort fuer einen alten Filter verwerfen
     if (busy)
+    {
+      if (force === true)
+        queued = true;
       return;
+    }
     busy = true;
-    fetch("freigabe.html?action=status" + (el("showall").checked ? "&all=1" : ""), {credentials: "same-origin", cache: "no-store"})
+    var all = el("showall").checked;
+    fetch("freigabe.html?action=status" + (all ? "&all=1" : ""), {credentials: "same-origin", cache: "no-store"})
       .then(function(r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(function(s) { s.force = force === true; render(s); })
+      .then(function(s)
+      {
+        if (all !== el("showall").checked)
+        {
+          queued = true;
+          return;
+        }
+        s.force = force === true;
+        render(s);
+      })
       .catch(function(e) { message("Status nicht abrufbar: " + e.message, false); })
-      .then(function() { busy = false; });
+      .then(function()
+      {
+        busy = false;
+        if (queued)
+        {
+          queued = false;
+          refresh(true);
+        }
+      });
   }
 
   function openEdit(name, u)
   {
     var debit = name == "last";
-    editing = {kind: debit ? "last" : "ueb", id: u.id};
+    editing = {kind: debit ? "last" : "ueb", ref: u.id + ":" + u.fp};
     el("edit-title").textContent = (debit ? "Lastschrift von " : "\u00dcberweisung an ") + u.name + " (" + u.iban + ")";
     el("edit-betrag").value = u.wert;
     el("edit-zweck").value = u.zweck;
@@ -297,6 +393,11 @@ var freigabe = (function()
       params.push(["action", "merge"]);
       post(params);
     },
+    allowAdd: function()
+    {
+      post([["action", "allowAdd"], ["iban", el("allow-iban").value], ["name", el("allow-name").value]])
+        .then(function(ok) { if (ok) { el("allow-iban").value = ""; el("allow-name").value = ""; } });
+    },
     batch: function()
     {
       var ids = checkedIds("id");
@@ -309,19 +410,15 @@ var freigabe = (function()
     {
       if (!editing)
         return;
-      post([["action", "edit"], ["kind", editing.kind], ["id", editing.id], ["betrag", el("edit-betrag").value],
+      var ed = editing;
+      post([["action", "edit"], ["kind", ed.kind], ["id", ed.ref], ["betrag", el("edit-betrag").value],
             ["zweck", el("edit-zweck").value], ["datum", el("edit-datum").value], ["ziel", el("edit-ziel").value]])
-        .then(function(ok) { if (ok) freigabe.cancel(); });
+        .then(function(ok) { if (ok && editing === ed) freigabe.cancel(); });
     },
     cancel: function()
     {
       editing = null;
       el("edit").style.display = "none";
-    },
-    decide: function(action)
-    {
-      if (vopId)
-        post([["action", action], ["vop", vopId]]);
     }
   };
 })();

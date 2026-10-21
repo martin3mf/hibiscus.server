@@ -32,7 +32,7 @@ public class Format
   /**
    * Liefert einen Saldo-Text fuer das angegebene Konto.
    * @param k das Konto.
-   * @return der Saldo-Text.
+   * @return der Saldo-Text, HTML-escaped.
    * @throws Exception
    */
   public String getSaldoText(Konto k) throws Exception
@@ -40,22 +40,22 @@ public class Format
     double saldo = k.getSaldo();
     Date date    = k.getSaldoDatum();
     if (!Double.isNaN(saldo) && date != null)
-      return HBCI.DECIMALFORMAT.format(saldo) + " " + k.getWaehrung() + " [" + HBCI.LONGDATEFORMAT.format(date) + "]";
+      return this.escape(HBCI.DECIMALFORMAT.format(saldo) + " " + k.getWaehrung() + " [" + HBCI.LONGDATEFORMAT.format(date) + "]");
     return i18n.tr("Noch kein Saldo abgerufen");
   }
   
   /**
    * Zeigt die Bank zur angegebenen BLZ an.
    * @param blz die BLZ.
-   * @return Bank
+   * @return Bank, HTML-escaped.
    * @throws Exception
    */
   public String getInstitut(String blz) throws Exception
   {
     String name = HBCIProperties.getNameForBank(blz);
     if (name != null && name.length() > 0)
-      return i18n.tr("{0} (BLZ {1})", new String[]{name,blz});
-    return blz;
+      return this.escape(i18n.tr("{0} (BLZ {1})", new String[]{name,blz}));
+    return this.escape(blz);
   }
   
   /**

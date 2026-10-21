@@ -78,11 +78,11 @@
             </tr>
             <tr>
               <td>Bezeichnung</td>
-              <td>$c.account.bezeichnung</td>
+              <td>$format.escape($c.account.bezeichnung)</td>
             </tr>
             <tr>
               <td>Kontonummer / BLZ</td>
-              <td>$c.account.kontonummer / $c.account.getBLZ() </td>
+              <td>$format.escape($c.account.kontonummer) / $format.escape($c.account.getBLZ()) </td>
             </tr>
             <tr>
               <td>Institut</td>
@@ -122,8 +122,8 @@
       </tr>
       #foreach($u in $c.getUmsaetze())
         <tr onmouseover="change_to(this);" onmouseout="change_back(this);">
-          <td>$!u.getAttribute("empfaenger")</td>
-          <td>$!u.zweck</td>
+          <td>$format.escape($u.getAttribute("empfaenger"))</td>
+          <td>$format.escape($u.zweck)</td>
           <td>$format.getDatum($u.datum)</td>
           <td>$format.getDatum($u.valuta)</td>
           <td style="text-align:right">$format.getBetrag($u.betrag)</td>
@@ -155,7 +155,7 @@
       #foreach($p in $c.getProtokoll())
         <tr onmouseover="change_to(this);" onmouseout="change_back(this);" class="type-$p.typ">
           <td style="white-space: nowrap"><pre>$format.getLongDatum($p.datum)</pre></td>
-          <td><pre>$p.kommentar</pre></td>
+          <td><pre>$format.escape($p.kommentar)</pre></td>
         </tr>
       #end
     </table>

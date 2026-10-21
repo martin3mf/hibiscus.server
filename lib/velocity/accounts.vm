@@ -37,10 +37,10 @@
             #set($passport = $c.getPassport($a))
             #set($sync     = $c.getOptions($a).synchronize)
             <tr onmouseover="change_to(this);" onmouseout="change_back(this);" class="syncstatus-$sync">
-              <td class="syncstatus-$sync">$a.bezeichnung</td>
+              <td class="syncstatus-$sync">$format.escape($a.bezeichnung)</td>
               <td class="syncstatus-$sync">$format.getInstitut($a.getBLZ())</td>
-              <td class="syncstatus-$sync">$a.kontonummer</td>
-              <td class="syncstatus-$sync">#if($passport) $passport.name #else - #end</td>
+              <td class="syncstatus-$sync">$format.escape($a.kontonummer)</td>
+              <td class="syncstatus-$sync">#if($passport) $format.escape($passport.name) #else - #end</td>
               <td class="syncstatus-$sync">#if($sync) ja #else nein #end</td>
               <td class="syncstatus-$sync" style="text-align:right">$format.getSaldoText($a)</td>
               <td><a href="account.html?id=$a.getID()"><img src="img/open.png" width="16" height="16" border="0" style="margin-right: 5px" align="left">Öffnen...</a></td>
