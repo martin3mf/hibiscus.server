@@ -33,25 +33,77 @@
   </div>
 </div>
 
-<h2>F&auml;llige SEPA-&Uuml;berweisungen</h2>
-
 <div id="running" class="note" style="display:none"><b>Ausf&uuml;hrung l&auml;uft.</b> Bei einer Push-Freigabe bitte in SecureGo plus best&auml;tigen.</div>
+
+<p>
+  <label><input type="checkbox" id="showall" onclick="freigabe.refresh(true)"> Auch noch nicht f&auml;llige Auftr&auml;ge anzeigen</label>
+</p>
+
+<div id="edit" class="note" style="display:none">
+  <b id="edit-title"></b><br>
+  <table>
+    <tr><td>Betrag (EUR)</td><td><input type="text" id="edit-betrag" size="12"></td></tr>
+    <tr><td>Verwendungszweck</td><td><input type="text" id="edit-zweck" size="70" maxlength="140"></td></tr>
+    <tr><td>Ausf&uuml;hrungstermin</td><td><input type="date" id="edit-datum"></td></tr>
+    <tr id="edit-ziel-row"><td>F&auml;lligkeit beim Zahler</td><td><input type="date" id="edit-ziel"></td></tr>
+  </table>
+  <button type="button" onclick="freigabe.save()">Speichern</button>
+  <button type="button" onclick="freigabe.cancel()">Abbrechen</button>
+</div>
+
+<h2>SEPA-&Uuml;berweisungen</h2>
+
+<div style="margin-bottom:10px">
+  Auswahl &auml;ndern:
+  <select id="batch-typ">
+    <option value="">Typ unver&auml;ndert</option>
+    <option value="normal">Standard</option>
+    <option value="termin">Termin&uuml;berweisung</option>
+    <option value="instant">Echtzeit&uuml;berweisung</option>
+  </select>
+  <input type="date" id="batch-datum" title="Ausf&uuml;hrungstermin, leer = unver&auml;ndert">
+  <button type="button" onclick="freigabe.batch()">Auf Auswahl anwenden</button>
+</div>
 
 <table class="data">
   <thead>
     <tr>
-      <th><input type="checkbox" id="all" title="Alle ausw&auml;hlen" onclick="freigabe.selectAll(this.checked)"></th>
+      <th><input type="checkbox" title="Alle ausw&auml;hlen" onclick="freigabe.selectAll('id',this.checked)"></th>
       <th>Termin</th>
+      <th>Typ</th>
       <th>Empf&auml;nger</th>
       <th>IBAN</th>
       <th style="text-align:right">Betrag</th>
       <th>Verwendungszweck</th>
+      <th></th>
     </tr>
   </thead>
-  <tbody id="transfers"><tr><td colspan="6">Lade ...</td></tr></tbody>
+  <tbody id="transfers"><tr><td colspan="8">Lade ...</td></tr></tbody>
 </table>
 <div style="margin-top:10px">
-  <button type="button" id="execute" onclick="freigabe.execute()">Ausgew&auml;hlte &Uuml;berweisungen ausf&uuml;hren</button>
+  <button type="button" class="execute" onclick="freigabe.execute('id')">Ausgew&auml;hlte &Uuml;berweisungen ausf&uuml;hren</button>
+</div>
+
+<h2>SEPA-Lastschriften</h2>
+
+<table class="data">
+  <thead>
+    <tr>
+      <th><input type="checkbox" title="Alle ausw&auml;hlen" onclick="freigabe.selectAll('last',this.checked)"></th>
+      <th>Termin</th>
+      <th>F&auml;lligkeit</th>
+      <th>Zahler</th>
+      <th>IBAN</th>
+      <th style="text-align:right">Betrag</th>
+      <th>Mandat</th>
+      <th>Verwendungszweck</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="debits"><tr><td colspan="9">Lade ...</td></tr></tbody>
+</table>
+<div style="margin-top:10px">
+  <button type="button" class="execute" onclick="freigabe.execute('last')">Ausgew&auml;hlte Lastschriften einziehen</button>
 </div>
 
 <div style="margin-top:20px">
@@ -63,8 +115,11 @@ var freigabe = (function()
 {
   var token   = "$c.getToken()";
   var vopId   = null;
-  var lastList = null;
+  var last    = {};
+  var data    = {};
+  var editing = null;
   var busy    = false;
+  var TYP     = {normal: "Standard", termin: "Termin", instant: "Echtzeit", umbuchung: "Umbuchung"};
 
   function el(id) { return document.getElementById(id); }
 
@@ -90,20 +145,57 @@ var freigabe = (function()
     m.style.display = text ? "" : "none";
   }
 
+  function checkedIds(name)
+  {
+    var ids = [];
+    document.querySelectorAll("input[name=" + name + "]:checked").forEach(function(c) { ids.push(c.value); });
+    return ids;
+  }
+
   function post(params)
   {
     var body = new URLSearchParams(params);
     body.append("token", token);
     return fetch("freigabe.html", {method: "POST", body: body, credentials: "same-origin"})
       .then(function(r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(function(res) { message(res.text, res.ok); refresh(); })
-      .catch(function(e) { message("Fehler: " + e.message, false); });
+      .then(function(res) { message(res.text, res.ok); refresh(true); return res.ok; })
+      .catch(function(e) { message("Fehler: " + e.message, false); return false; });
+  }
+
+  // Tabelle nur neu aufbauen, wenn sich die Liste geaendert hat; Auswahl bleibt erhalten
+  function table(bodyId, name, list, cols, rightCol, emptyText, force)
+  {
+    var json = JSON.stringify(list);
+    if (!force && json == last[bodyId])
+      return;
+    last[bodyId] = json;
+    var checked = {};
+    checkedIds(name).forEach(function(id) { checked[id] = true; });
+    var body = el(bodyId);
+    body.innerHTML = "";
+    if (list.length == 0)
+      body.appendChild(row(["", emptyText], -1));
+    list.forEach(function(u)
+    {
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.name = name;
+      cb.value = u.id;
+      cb.checked = !!checked[u.id];
+      var edit = document.createElement("a");
+      edit.href = "#";
+      edit.textContent = "bearbeiten";
+      edit.onclick = function() { openEdit(name, u); return false; };
+      var tr = row([cb].concat(cols(u)).concat([edit]), rightCol);
+      if (!u.faellig) tr.style.color = "#808080";
+      body.appendChild(tr);
+    });
   }
 
   function render(s)
   {
     el("running").style.display = s.running ? "" : "none";
-    el("execute").style.display = s.running ? "none" : "";
+    document.querySelectorAll("button.execute").forEach(function(b) { b.style.display = s.running ? "none" : ""; });
 
     var p = s.pending;
     el("vop").style.display = p ? "" : "none";
@@ -118,58 +210,77 @@ var freigabe = (function()
       p.items.forEach(function(i) { items.appendChild(row([i.status, i.original, i.name, i.iban, i.amount, i.usage], 4)); });
     }
 
-    // Tabelle nur neu aufbauen, wenn sich die Liste geaendert hat; Auswahl bleibt erhalten
-    var list = JSON.stringify(s.transfers);
-    if (list == lastList)
-      return;
-    lastList = list;
-    var checked = {};
-    document.querySelectorAll("input[name=id]:checked").forEach(function(c) { checked[c.value] = true; });
-    var body = el("transfers");
-    body.innerHTML = "";
-    if (s.transfers.length == 0)
-      body.appendChild(row(["", "Keine f\u00e4lligen \u00dcberweisungen", "", "", "", ""], -1));
-    s.transfers.forEach(function(u)
-    {
-      var cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.name = "id";
-      cb.value = u.id;
-      cb.checked = !!checked[u.id];
-      body.appendChild(row([cb, u.termin, u.name, u.iban, u.betrag, u.zweck], 4));
-    });
-    el("all").checked = false;
+    var none = el("showall").checked ? "Keine offenen " : "Keine f\u00e4lligen ";
+    table("transfers", "id", s.transfers, function(u) { return [u.termin, TYP[u.typ] || u.typ, u.name, u.iban, u.betrag, u.zweck]; }, 5, none + "\u00dcberweisungen", s.force);
+    table("debits", "last", s.debits, function(u) { return [u.termin, u.ziel, u.name, u.iban, u.betrag, u.mandat + " (" + u.sequenz + ")", u.zweck]; }, 5, none + "Lastschriften", s.force);
   }
 
-  function refresh()
+  function refresh(force)
   {
     if (busy)
       return;
     busy = true;
-    fetch("freigabe.html?action=status", {credentials: "same-origin", cache: "no-store"})
+    fetch("freigabe.html?action=status" + (el("showall").checked ? "&all=1" : ""), {credentials: "same-origin", cache: "no-store"})
       .then(function(r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(render)
+      .then(function(s) { s.force = force === true; render(s); })
       .catch(function(e) { message("Status nicht abrufbar: " + e.message, false); })
       .then(function() { busy = false; });
   }
 
-  refresh();
+  function openEdit(name, u)
+  {
+    var debit = name == "last";
+    editing = {kind: debit ? "last" : "ueb", id: u.id};
+    el("edit-title").textContent = (debit ? "Lastschrift von " : "\u00dcberweisung an ") + u.name + " (" + u.iban + ")";
+    el("edit-betrag").value = u.wert;
+    el("edit-zweck").value = u.zweck;
+    el("edit-datum").value = u.terminIso;
+    el("edit-ziel").value = debit ? u.zielIso : "";
+    el("edit-ziel-row").style.display = debit ? "" : "none";
+    el("edit").style.display = "";
+    el("edit-betrag").focus();
+  }
+
+  refresh(true);
   window.setInterval(refresh, 3000);
 
   return {
-    selectAll: function(b)
+    refresh: refresh,
+    selectAll: function(name, b)
     {
-      document.querySelectorAll("input[name=id]").forEach(function(c) { c.checked = b; });
+      document.querySelectorAll("input[name=" + name + "]").forEach(function(c) { c.checked = b; });
     },
-    execute: function()
+    execute: function(name)
     {
-      var ids = [];
-      document.querySelectorAll("input[name=id]:checked").forEach(function(c) { ids.push(["id", c.value]); });
-      if (ids.length == 0) { message("Keine \u00dcberweisung ausgew\u00e4hlt", false); return; }
-      if (!window.confirm(ids.length + " \u00dcberweisung(en) jetzt an die Bank senden?"))
+      var ids = checkedIds(name);
+      var what = name == "last" ? "Lastschrift(en) jetzt bei der Bank einziehen" : "\u00dcberweisung(en) jetzt an die Bank senden";
+      if (ids.length == 0) { message("Kein Auftrag ausgew\u00e4hlt", false); return; }
+      if (!window.confirm(ids.length + " " + what + "?"))
         return;
-      ids.push(["action", "execute"]);
-      post(ids);
+      var params = ids.map(function(id) { return [name, id]; });
+      params.push(["action", "execute"]);
+      post(params);
+    },
+    batch: function()
+    {
+      var ids = checkedIds("id");
+      if (ids.length == 0) { message("Keine \u00dcberweisung ausgew\u00e4hlt", false); return; }
+      var params = ids.map(function(id) { return ["id", id]; });
+      params.push(["action", "batch"], ["typ", el("batch-typ").value], ["datum", el("batch-datum").value]);
+      post(params);
+    },
+    save: function()
+    {
+      if (!editing)
+        return;
+      post([["action", "edit"], ["kind", editing.kind], ["id", editing.id], ["betrag", el("edit-betrag").value],
+            ["zweck", el("edit-zweck").value], ["datum", el("edit-datum").value], ["ziel", el("edit-ziel").value]])
+        .then(function(ok) { if (ok) freigabe.cancel(); });
+    },
+    cancel: function()
+    {
+      editing = null;
+      el("edit").style.display = "none";
     },
     decide: function(action)
     {

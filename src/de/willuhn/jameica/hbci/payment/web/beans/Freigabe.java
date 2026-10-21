@@ -10,10 +10,14 @@
 
 package de.willuhn.jameica.hbci.payment.web.beans;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.rmi.RemoteException;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -33,9 +37,12 @@ import de.willuhn.jameica.hbci.Settings;
 import de.willuhn.jameica.hbci.payment.Freigaben;
 import de.willuhn.jameica.hbci.payment.Plugin;
 import de.willuhn.jameica.hbci.rmi.AuslandsUeberweisung;
+import de.willuhn.jameica.hbci.rmi.BaseUeberweisung;
+import de.willuhn.jameica.hbci.rmi.SepaLastschrift;
 import de.willuhn.jameica.hbci.synchronize.SynchronizeBackend;
 import de.willuhn.jameica.hbci.synchronize.SynchronizeEngine;
 import de.willuhn.jameica.hbci.synchronize.jobs.SynchronizeJob;
+import de.willuhn.jameica.hbci.synchronize.jobs.SynchronizeJobSepaLastschrift;
 import de.willuhn.jameica.hbci.synchronize.jobs.SynchronizeJobSepaUeberweisung;
 import de.willuhn.jameica.services.BeanService;
 import de.willuhn.jameica.system.Application;
@@ -46,7 +53,7 @@ import de.willuhn.util.ApplicationException;
 import de.willuhn.util.I18N;
 
 /**
- * Controller fuer die manuelle Ausfuehrung von SEPA-Ueberweisungen und die VoP-Freigabe.
+ * Controller fuer die manuelle Ausfuehrung und Bearbeitung von SEPA-Ueberweisungen und -Lastschriften und die VoP-Freigabe.
  */
 public class Freigabe
 {
@@ -60,20 +67,22 @@ public class Freigabe
   private HttpServletResponse response = null;
 
   /**
-   * Liefert alle faelligen, noch nicht ausgefuehrten SEPA-Ueberweisungen.
-   * @return Liste der faelligen Ueberweisungen.
+   * Liefert die noch nicht ausgefuehrten Auftraege eines Typs.
+   * @param type AuslandsUeberweisung oder SepaLastschrift.
+   * @param all true: alle offenen, false: nur faellige.
+   * @return Liste der Auftraege.
    * @throws Exception
    */
-  public List<AuslandsUeberweisung> getUeberweisungen() throws Exception
+  private <T extends BaseUeberweisung> List<T> list(Class<T> type, boolean all) throws Exception
   {
-    DBIterator list = Settings.getDBService().createList(AuslandsUeberweisung.class);
+    DBIterator list = Settings.getDBService().createList(type);
     list.addFilter("(ausgefuehrt is null or ausgefuehrt = 0)");
     list.setOrder("order by termin, id");
-    final List<AuslandsUeberweisung> result = new ArrayList<>();
+    final List<T> result = new ArrayList<>();
     while (list.hasNext())
     {
-      final AuslandsUeberweisung u = (AuslandsUeberweisung) list.next();
-      if (u.ueberfaellig())
+      final T u = type.cast(list.next());
+      if (all || u.ueberfaellig())
         result.add(u);
     }
     return result;
@@ -143,18 +152,25 @@ public class Freigabe
         .put("items",items));
     }
 
-    final JSONArray list = new JSONArray();
-    for (AuslandsUeberweisung u:this.getUeberweisungen())
+    final boolean all = "1".equals(this.request.getParameter("all"));
+    final JSONArray transfers = new JSONArray();
+    for (AuslandsUeberweisung u:this.list(AuslandsUeberweisung.class,all))
     {
-      list.put(new JSONObject()
-        .put("id",u.getID())
-        .put("termin",f.getDatum(u.getTermin()))
-        .put("name",str(u.getGegenkontoName()))
-        .put("iban",str(u.getGegenkontoNummer()))
-        .put("betrag",f.getBetrag(u.getBetrag()))
-        .put("zweck",str(u.getZweck())));
+      transfers.put(json(f,u)
+        .put("typ",u.isUmbuchung() ? "umbuchung" : u.isInstantPayment() ? "instant" : u.isTerminUeberweisung() ? "termin" : "normal"));
     }
-    json.put("transfers",list);
+    json.put("transfers",transfers);
+
+    final JSONArray debits = new JSONArray();
+    for (SepaLastschrift l:this.list(SepaLastschrift.class,all))
+    {
+      debits.put(json(f,l)
+        .put("ziel",f.getDatum(l.getTargetDate()))
+        .put("zielIso",iso(l.getTargetDate()))
+        .put("mandat",str(l.getMandateId()))
+        .put("sequenz",l.getSequenceType() != null ? l.getSequenceType().getDescription() : ""));
+    }
+    json.put("debits",debits);
     this.send(json);
   }
 
@@ -168,27 +184,15 @@ public class Freigabe
     {
       this.checkRequest();
 
-      final String[] ids = this.request.getParameterValues("id");
-      if (ids == null || ids.length == 0)
-        throw new ApplicationException(i18n.tr("Keine \u00dcberweisung ausgew\u00e4hlt"));
-
-      // Jede ID nur einmal (numerisch kanonisiert, "042" = "42") - sonst wuerde derselbe Auftrag doppelt gesendet
-      final Set<Long> unique = new LinkedHashSet<>();
-      for (String id:ids)
-      {
-        try
-        {
-          if (!unique.add(Long.valueOf(id.trim())))
-            throw new ApplicationException(i18n.tr("\u00dcberweisung mehrfach ausgew\u00e4hlt"));
-        }
-        catch (NumberFormatException nfe)
-        {
-          throw new ApplicationException(i18n.tr("Ung\u00fcltige Auftrags-ID"));
-        }
-      }
+      // Jede ID nur einmal - sonst wuerde derselbe Auftrag doppelt gesendet
+      final Set<Long> transferIds = Eingabe.ids(this.request.getParameterValues("id"));
+      final Set<Long> debitIds = Eingabe.ids(this.request.getParameterValues("last"));
+      if (transferIds.isEmpty() && debitIds.isEmpty())
+        throw new ApplicationException(i18n.tr("Kein Auftrag ausgew\u00e4hlt"));
 
       final BeanService service = Application.getBootLoader().getBootable(BeanService.class);
       final SynchronizeEngine engine = service.get(SynchronizeEngine.class);
+      final Date today = Eingabe.today();
 
       // Pruefen und Starten atomar, damit zwei parallele Requests nicht beide durchkommen
       synchronized (Freigabe.class)
@@ -197,25 +201,126 @@ public class Freigabe
           throw new ApplicationException(i18n.tr("Synchronisierung l\u00e4uft bereits"));
 
         final Map<SynchronizeBackend,List<SynchronizeJob>> jobs = new LinkedHashMap<>();
-        for (Long id:unique)
+        for (Long id:transferIds)
         {
-          final AuslandsUeberweisung u = (AuslandsUeberweisung) Settings.getDBService().createObject(AuslandsUeberweisung.class,id.toString());
-          if (u.ausgefuehrt() || !u.ueberfaellig())
-            throw new ApplicationException(i18n.tr("\u00dcberweisung {0} ist bereits ausgef\u00fchrt oder noch nicht f\u00e4llig",id.toString()));
-
-          final SynchronizeBackend backend = engine.getBackend(SynchronizeJobSepaUeberweisung.class,u.getKonto());
-          final SynchronizeJob job = backend.create(SynchronizeJobSepaUeberweisung.class,u.getKonto());
-          job.setContext(SynchronizeJob.CTX_ENTITY,u);
-          jobs.computeIfAbsent(backend,b -> new ArrayList<>()).add(job);
+          final AuslandsUeberweisung u = load(AuslandsUeberweisung.class,id);
+          // Terminueberweisungen duerfen vor dem Termin gesendet werden, die Bank fuehrt sie am Termin aus
+          if (u.isTerminUeberweisung())
+            Eingabe.checkTermin(true,u.getTermin(),today);
+          else if (!u.ueberfaellig())
+            throw new ApplicationException(i18n.tr("\u00dcberweisung {0} ist noch nicht f\u00e4llig",id.toString()));
+          addJob(jobs,engine,SynchronizeJobSepaUeberweisung.class,u);
+        }
+        for (Long id:debitIds)
+        {
+          final SepaLastschrift l = load(SepaLastschrift.class,id);
+          if (!l.ueberfaellig())
+            throw new ApplicationException(i18n.tr("Lastschrift {0} ist noch nicht f\u00e4llig",id.toString()));
+          addJob(jobs,engine,SynchronizeJobSepaLastschrift.class,l);
         }
 
         for (Map.Entry<SynchronizeBackend,List<SynchronizeJob>> e:jobs.entrySet())
         {
-          Logger.info("manual execution of " + e.getValue().size() + " transfers via " + e.getKey().getName());
+          Logger.info("manual execution of " + e.getValue().size() + " orders via " + e.getKey().getName());
           e.getKey().execute(e.getValue());
         }
       }
       this.send(result(true,i18n.tr("Ausf\u00fchrung gestartet")));
+    }
+    catch (ApplicationException ae)
+    {
+      this.send(result(false,ae.getMessage()));
+    }
+  }
+
+  /**
+   * Setzt Typ und/oder Datum fuer mehrere Ueberweisungen in einer Transaktion.
+   * @throws Exception
+   */
+  public void batch() throws Exception
+  {
+    try
+    {
+      this.checkRequest();
+      final Set<Long> ids = Eingabe.ids(this.request.getParameterValues("id"));
+      if (ids.isEmpty())
+        throw new ApplicationException(i18n.tr("Keine \u00dcberweisung ausgew\u00e4hlt"));
+      final Date today = Eingabe.today();
+      final Eingabe.Typ typ = Eingabe.typ(this.request.getParameter("typ"));
+      final String d = this.request.getParameter("datum");
+      final Date datum = d == null || d.isEmpty() ? null : Eingabe.datum(d,today);
+      if (typ == null && datum == null)
+        throw new ApplicationException(i18n.tr("Bitte Typ oder Datum w\u00e4hlen"));
+
+      synchronized (Freigabe.class)
+      {
+        if (this.isRunning())
+          throw new ApplicationException(i18n.tr("Synchronisierung l\u00e4uft bereits"));
+
+        final List<AuslandsUeberweisung> list = new ArrayList<>();
+        for (Long id:ids)
+        {
+          final AuslandsUeberweisung u = load(AuslandsUeberweisung.class,id);
+          if (typ != null)
+          {
+            u.setTerminUeberweisung(typ == Eingabe.Typ.termin);
+            u.setInstantPayment(typ == Eingabe.Typ.instant);
+          }
+          if (datum != null)
+            u.setTermin(datum);
+          Eingabe.checkTermin(u.isTerminUeberweisung(),u.getTermin(),today);
+          list.add(u);
+        }
+        store(list);
+      }
+      Logger.info("web batch change of " + ids.size() + " transfers: typ=" + typ + ", datum=" + d);
+      this.send(result(true,i18n.tr("{0} \u00dcberweisung(en) ge\u00e4ndert",String.valueOf(ids.size()))));
+    }
+    catch (ApplicationException ae)
+    {
+      this.send(result(false,ae.getMessage()));
+    }
+  }
+
+  /**
+   * Aendert Betrag, Verwendungszweck und Termin eines Auftrags (bei Lastschriften auch die Faelligkeit).
+   * Name und IBAN sind bewusst nicht aenderbar.
+   * @throws Exception
+   */
+  public void edit() throws Exception
+  {
+    try
+    {
+      this.checkRequest();
+      final boolean debit = "last".equals(this.request.getParameter("kind"));
+      final Set<Long> ids = Eingabe.ids(new String[]{this.request.getParameter("id")});
+      final Date today = Eingabe.today();
+      final BigDecimal betrag = Eingabe.betrag(this.request.getParameter("betrag"));
+      final String zweck = Eingabe.zweck(this.request.getParameter("zweck"));
+      final Date termin = Eingabe.datum(this.request.getParameter("datum"),today);
+      final Date ziel = debit ? Eingabe.datum(this.request.getParameter("ziel"),today) : null;
+      if (ziel != null)
+        Eingabe.checkZiel(ziel,termin,today);
+
+      synchronized (Freigabe.class)
+      {
+        if (this.isRunning())
+          throw new ApplicationException(i18n.tr("Synchronisierung l\u00e4uft bereits"));
+
+        final Long id = ids.iterator().next();
+        final BaseUeberweisung u = debit ? load(SepaLastschrift.class,id) : load(AuslandsUeberweisung.class,id);
+        final String before = f(u.getBetrag()) + " / " + u.getZweck() + " / " + iso(u.getTermin());
+        u.setBetrag(betrag.doubleValue());
+        u.setZweck(zweck);
+        u.setTermin(termin);
+        if (debit)
+          ((SepaLastschrift) u).setTargetDate(ziel);
+        else
+          Eingabe.checkTermin(((AuslandsUeberweisung) u).isTerminUeberweisung(),termin,today);
+        store(List.of(u));
+        Logger.info("web edit of " + (debit ? "debit " : "transfer ") + id + ": " + before + " -> " + f(u.getBetrag()) + " / " + zweck + " / " + iso(termin));
+      }
+      this.send(result(true,i18n.tr("Auftrag gespeichert")));
     }
     catch (ApplicationException ae)
     {
@@ -260,6 +365,99 @@ public class Freigabe
     {
       this.send(result(false,ae.getMessage()));
     }
+  }
+
+  /**
+   * Laedt einen offenen Auftrag.
+   * @param type Typ des Auftrags.
+   * @param id ID des Auftrags.
+   * @return der Auftrag.
+   * @throws Exception wenn er fehlt oder schon ausgefuehrt ist.
+   */
+  private static <T extends BaseUeberweisung> T load(Class<T> type, Long id) throws Exception
+  {
+    final T u = type.cast(Settings.getDBService().createObject(type,id.toString()));
+    if (u.isNewObject())
+      throw new ApplicationException(i18n.tr("Auftrag {0} nicht gefunden",id.toString()));
+    if (u.ausgefuehrt())
+      throw new ApplicationException(i18n.tr("Auftrag {0} ist bereits ausgef\u00fchrt",id.toString()));
+    return u;
+  }
+
+  /**
+   * Speichert alle Auftraege oder keinen. Hibiscus prueft dabei selbst Zeichensatz, Laenge und Umbuchung/Termin.
+   * @param list die Auftraege.
+   * @throws Exception
+   */
+  private static void store(List<? extends BaseUeberweisung> list) throws Exception
+  {
+    final BaseUeberweisung first = list.get(0);
+    first.transactionBegin();
+    try
+    {
+      for (BaseUeberweisung u:list)
+        u.store();
+      first.transactionCommit();
+    }
+    catch (Exception e)
+    {
+      first.transactionRollback();
+      throw e;
+    }
+  }
+
+  /**
+   * Haengt einen Sendejob fuer den Auftrag an.
+   * @param jobs Jobs je Backend.
+   * @param engine die Synchronize-Engine.
+   * @param type Jobtyp.
+   * @param u der Auftrag.
+   * @throws Exception
+   */
+  private static void addJob(Map<SynchronizeBackend,List<SynchronizeJob>> jobs, SynchronizeEngine engine, Class<? extends SynchronizeJob> type, BaseUeberweisung u) throws Exception
+  {
+    final SynchronizeBackend backend = engine.getBackend(type,u.getKonto());
+    final SynchronizeJob job = backend.create(type,u.getKonto());
+    job.setContext(SynchronizeJob.CTX_ENTITY,u);
+    jobs.computeIfAbsent(backend,b -> new ArrayList<>()).add(job);
+  }
+
+  /**
+   * @param f Formatierer.
+   * @param u Auftrag.
+   * @return die gemeinsamen Felder als JSON.
+   * @throws RemoteException
+   */
+  private static JSONObject json(Format f, BaseUeberweisung u) throws RemoteException
+  {
+    return new JSONObject()
+      .put("id",u.getID())
+      .put("termin",f.getDatum(u.getTermin()))
+      .put("terminIso",iso(u.getTermin()))
+      .put("faellig",u.ueberfaellig())
+      .put("name",str(u.getGegenkontoName()))
+      .put("iban",str(u.getGegenkontoNummer()))
+      .put("betrag",f.getBetrag(u.getBetrag()))
+      .put("wert",f(u.getBetrag()))
+      .put("zweck",str(u.getZweck()));
+  }
+
+  /**
+   * @param d Datum oder null.
+   * @return yyyy-MM-dd oder "".
+   */
+  private static String iso(Date d)
+  {
+    return d != null ? new SimpleDateFormat("yyyy-MM-dd").format(d) : "";
+  }
+
+  /**
+   * @param d Betrag.
+   * @return Betrag mit 2 Nachkommastellen, Punkt als Trenner.
+   */
+  private static String f(double d)
+  {
+    return BigDecimal.valueOf(d).setScale(2,java.math.RoundingMode.HALF_UP).toPlainString();
   }
 
   /**
