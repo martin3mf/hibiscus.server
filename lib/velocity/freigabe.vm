@@ -30,7 +30,19 @@
   <div style="margin-top:10px" id="vop-buttons"></div>
 </div>
 
-<div id="running" class="note" style="display:none"><b>Ausf&uuml;hrung l&auml;uft.</b> Bei einer Push-Freigabe bitte in SecureGo plus best&auml;tigen.</div>
+<div id="running" class="note" style="display:none"><b>Ausf&uuml;hrung l&auml;uft:</b> <span id="running-step"></span></div>
+
+<div id="tan" style="display:none;position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:100">
+  <div style="max-width:560px;margin:120px auto;background:#fff;border:2px solid #800000;padding:20px">
+    <h2 style="margin-top:0">Freigabe in SecureGo plus erforderlich</h2>
+    <p id="tan-retry" style="display:none;color:#800000"><b>Die Bank meldet: noch nicht freigegeben.</b></p>
+    <p>Bitte den Auftrag jetzt in der App SecureGo plus freigeben.</p>
+    <p id="tan-auftrag"></p>
+    <p id="tan-text" style="white-space:pre-wrap"></p>
+    <p>Der Server wartet noch <b id="tan-remaining"></b> Sekunden und fragt dann die Bank.</p>
+    <div id="tan-buttons"></div>
+  </div>
+</div>
 
 <p>
   <label><input type="checkbox" id="showall" onclick="freigabe.refresh(true)"> Auch noch nicht f&auml;llige Auftr&auml;ge anzeigen</label>
@@ -148,8 +160,17 @@ Gemerkte Kombinationen geben nur &bdquo;Beinahe-&Uuml;bereinstimmung&ldquo; mit 
   <tbody id="allow"><tr><td colspan="6">Lade ...</td></tr></tbody>
 </table>
 
-<div style="margin-top:20px">
-  #parse("includes/log.vm")
+<style>
+  table.data tr.INFO td, table.data tr.DEBUG td { color: #46824A; }
+  table.data tr.WARN td { color: #5770B2; }
+  table.data tr.ERROR td { color: #6E1416; background: #FFAC95; }
+</style>
+<h2>System-Log</h2>
+<div style="border:1px solid #a5a5a5;height:300px;overflow:auto;overflow-x:hidden">
+  <table class="data" style="border:none;margin:0;padding:0">
+    <thead><tr><th>Datum</th><th>Quelle</th><th>Text</th></tr></thead>
+    <tbody id="log"></tbody>
+  </table>
 </div>
 
 <script type="text/javascript">
@@ -157,6 +178,8 @@ var freigabe = (function()
 {
   var token   = "$c.getToken()";
   var vopId   = null; // Entscheidung, fuer die die Buttons gebaut sind
+  var tanId   = null; // Push-Freigabe, fuer die der Button gebaut ist
+  var tanLeft = 0;
   var last    = {};
   var data    = {};
   var editing = null;
@@ -243,6 +266,9 @@ var freigabe = (function()
   function render(s)
   {
     el("running").style.display = s.running ? "" : "none";
+    el("running-step").textContent = s.log.length ? s.log[0].text : "";
+    renderTan(s.tan);
+    renderLog(s.log);
     document.querySelectorAll("button.execute").forEach(function(b) { b.style.display = s.running ? "none" : ""; });
 
     var p = s.pending;
@@ -287,6 +313,47 @@ var freigabe = (function()
     table("transfers", "id", s.transfers, function(u) { return [u.termin, TYP[u.typ] || u.typ, u.name, u.iban, u.betrag, u.zweck]; }, 5, none + "\u00dcberweisungen", s.force);
     table("collective", "sammel", s.collective, function(u) { return [u.termin, u.ziel, u.bezeichnung, String(u.anzahl), u.summe]; }, 5, none + "Sammellastschriften", s.force);
     table("debits", "last", s.debits, function(u) { return [u.termin, u.ziel, u.name, u.iban, u.betrag, u.mandat + " (" + u.sequenz + ")", u.zweck]; }, 5, none + "Lastschriften", s.force);
+  }
+
+  function renderTan(t)
+  {
+    el("tan").style.display = t ? "" : "none";
+    // Button je Push-Freigabe neu bauen, mit fest gebundener ID
+    if ((t ? t.id : null) !== tanId)
+    {
+      tanId = t ? t.id : null;
+      var buttons = el("tan-buttons");
+      buttons.innerHTML = "";
+      if (t)
+      {
+        var id = t.id;
+        var b = document.createElement("button");
+        b.type = "button";
+        b.textContent = "In SecureGo plus freigegeben \u2013 weiter";
+        b.onclick = function() { b.disabled = true; post([["action", "tanConfirm"], ["tan", id]]).then(function(ok) { if (!ok) b.disabled = false; }); };
+        buttons.appendChild(b);
+      }
+    }
+    if (t)
+    {
+      tanLeft = t.remaining;
+      el("tan-remaining").textContent = String(tanLeft);
+      el("tan-retry").style.display = t.retry ? "" : "none";
+      el("tan-auftrag").textContent = t.auftrag ? "Auftrag: " + t.auftrag : "";
+      el("tan-text").textContent = t.text ? "Text der Bank: " + t.text : "";
+    }
+  }
+
+  function renderLog(list)
+  {
+    var body = el("log");
+    body.innerHTML = "";
+    list.forEach(function(l)
+    {
+      var tr = row([l.date, l.class, l.text]);
+      tr.className = l.level;
+      body.appendChild(tr);
+    });
   }
 
   function renderAllow(list)
@@ -365,6 +432,12 @@ var freigabe = (function()
 
   refresh(true);
   window.setInterval(refresh, 3000);
+  // Countdown zwischen zwei Statusabfragen weiterzaehlen
+  window.setInterval(function()
+  {
+    if (tanId && tanLeft > 0)
+      el("tan-remaining").textContent = String(--tanLeft);
+  }, 1000);
 
   return {
     refresh: refresh,

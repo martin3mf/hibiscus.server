@@ -64,6 +64,42 @@ public class FreigabenTest
     waiter.join(5000);
     check(!waiter.isAlive() && !got[0], "interrupt beats concurrent approval");
 
+    // Push-Freigabe: Bestaetigung weckt sofort, Ablauf setzt ohne Bestaetigung fort
+    final boolean[] tanGot = {false};
+    Thread tanWaiter = new Thread(() -> { try { tanGot[0] = Freigaben.awaitTan("bitte freigeben","job",false,10); } catch (InterruptedException e) {} });
+    long t0 = System.currentTimeMillis();
+    tanWaiter.start();
+    while (Freigaben.getTan() == null)
+      Thread.sleep(10);
+    check(Freigaben.getTan().getRemaining() >= 8, "remaining seconds reported");
+    check(!Freigaben.confirmTan("wrong-id"), "wrong tan id refused");
+    final String tanId = Freigaben.getTan().getId();
+    check(Freigaben.confirmTan(tanId), "tan confirmed");
+    tanWaiter.join(2000);
+    check(!tanWaiter.isAlive() && tanGot[0], "confirmation wakes the waiter");
+    check(System.currentTimeMillis() - t0 < 3000, "no full wait after confirmation");
+    check(Freigaben.getTan() == null, "tan cleared after confirmation");
+    check(!Freigaben.confirmTan(tanId), "second confirmation refused");
+    t0 = System.currentTimeMillis();
+    check(!Freigaben.awaitTan("t","j",true,1), "timeout continues unconfirmed");
+    check(System.currentTimeMillis() - t0 >= 900, "timeout waited");
+    check(Freigaben.getTan() == null, "tan cleared after timeout");
+    // Bestaetigung nach Fristablauf, bevor der Waiter aufwacht: abgelehnt
+    final boolean[] lateGot = {true};
+    Thread lateWaiter = new Thread(() -> { try { lateGot[0] = Freigaben.awaitTan("t","j",false,1); } catch (InterruptedException e) {} });
+    final Freigaben.Tan lateTan;
+    synchronized (Freigaben.class)
+    {
+      lateWaiter.start();
+      Thread.sleep(1200);
+    }
+    while (Freigaben.getTan() == null && lateWaiter.isAlive())
+      Thread.sleep(1);
+    lateTan = Freigaben.getTan();
+    check(lateTan == null || !Freigaben.confirmTan(lateTan.getId()), "confirmation after deadline refused");
+    lateWaiter.join(3000);
+    check(!lateGot[0], "late confirmation does not flip timeout");
+
     System.out.println("FreigabenTest: OK");
   }
 

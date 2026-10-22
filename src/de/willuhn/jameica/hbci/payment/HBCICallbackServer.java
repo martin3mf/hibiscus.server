@@ -230,20 +230,9 @@ public class HBCICallbackServer extends AbstractHibiscusHBCICallback
         
         if (haveDecoupled && !Settings.getPushTanDecoupledTanHandler())
         {
-          // Wir warten hier einfach eine definierte Anzahl von Sekunden und setzen dann automatisch fort.
-          // Wenn man auf dem anderen Gerät schnell genug reagiert, wäre per Server tatsächlich
-          // auch die Ausführung von TAN-pflichtigen Geschäftsvorfällen wieder automatisierbar
-          final long millis = Settings.getPushTanDecoupledWait() * 1000L;
-          Logger.info("Waiting " + millis + "ms for PushTAN decoupled confirmation from other device");
-          try
-          {
-            Thread.sleep(millis);
-            Logger.info("Waited " + millis + "ms for PushTAN decoupled confirmation from other device. Continuing process");
-          }
-          catch (InterruptedException e)
-          {
-            Logger.error("interrupted",e);
-          }
+          // Wir warten eine definierte Anzahl von Sekunden und setzen dann automatisch fort.
+          // Die Freigabe-Seite zeigt die Wartezeit an und kann nach der Bestaetigung in der App sofort fortsetzen.
+          this.waitDecoupled(passport,msg,false);
           return;
         }
         
@@ -282,6 +271,15 @@ public class HBCICallbackServer extends AbstractHibiscusHBCICallback
         }
         return;
         
+      case NEED_PT_DECOUPLED_RETRY:
+        // Bank hat die Freigabe noch nicht (3956): erneut sichtbar warten, danach fragt HBCI4Java wieder nach
+        if (!Settings.getPushTanDecoupledTanHandler())
+        {
+          this.waitDecoupled(passport,msg,true);
+          return;
+        }
+        break;
+
       case NEED_CONNECTION:
       case CLOSE_CONNECTION:
         // Ueberschrieben, weil wir im Server-Mode davon ausgehen,
@@ -379,6 +377,31 @@ public class HBCICallbackServer extends AbstractHibiscusHBCICallback
     parent.callback(passport, reason, msg, datatype, retData);
   }
   
+  /**
+   * Wartet auf die Push-Freigabe in der App, sichtbar auf der Freigabe-Seite.
+   * @param passport der Passport.
+   * @param msg der Text der Bank.
+   * @param retry true, wenn die Bank die Freigabe noch nicht hatte.
+   */
+  private void waitDecoupled(HBCIPassport passport, String msg, boolean retry)
+  {
+    final int seconds = Settings.getPushTanDecoupledWait();
+    final HibiscusDBObject context = this.getContext(passport);
+    final String auftrag = context != null ? HBCIContext.toString(context) : null;
+    Logger.info("Waiting max. " + seconds + "s for PushTAN decoupled confirmation from other device" + (retry ? " (bank: not yet confirmed)" : ""));
+    try
+    {
+      if (Freigaben.awaitTan(msg,auftrag,retry,seconds))
+        Logger.info("PushTAN decoupled confirmation reported in web frontend. Continuing process");
+      else
+        Logger.info("Waited " + seconds + "s for PushTAN decoupled confirmation from other device. Continuing process");
+    }
+    catch (InterruptedException e)
+    {
+      Logger.error("interrupted",e);
+    }
+  }
+
   /**
    * Versucht den zugehoerigen Auftrag zu ermitteln.
    * @param passport der Passport.

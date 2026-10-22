@@ -64,6 +64,7 @@ public class Freigabe
 {
   private final static I18N i18n = Application.getPluginLoader().getPlugin(Plugin.class).getResources().getI18N();
   private final static String TOKEN = "freigabe.token";
+  private final static int LOG_LINES = 40;
   private final static Date PARKED = new java.util.GregorianCalendar(2099,java.util.Calendar.DECEMBER,31).getTime();
 
   @Request
@@ -133,6 +134,32 @@ public class Freigabe
   public void status() throws Exception
   {
     final JSONObject json = new JSONObject();
+
+    // Push-Freigabe und System-Log brauchen die Sperre nicht: kein DB-Zugriff
+    final Freigaben.Tan t = Freigaben.getTan();
+    if (t != null)
+    {
+      json.put("tan",new JSONObject()
+        .put("id",t.getId())
+        .put("text",str(t.getText()))
+        .put("auftrag",str(t.getAuftrag()))
+        .put("retry",t.isRetry())
+        .put("remaining",t.getRemaining()));
+    }
+    final JSONArray log = new JSONArray();
+    final SimpleDateFormat df = new SimpleDateFormat("dd.MM.yyyy HH:mm:ss");
+    final de.willuhn.logging.Message[] lines = Logger.getLastLines();
+    for (int i = lines.length - 1;i >= 0 && i >= lines.length - LOG_LINES;--i)
+    {
+      final String c = lines[i].getLoggingClass();
+      log.put(new JSONObject()
+        .put("date",df.format(lines[i].getDate()))
+        .put("level",lines[i].getLevel().getName())
+        .put("class",c != null ? c.substring(c.lastIndexOf('.') + 1) : "")
+        .put("text",str(lines[i].getText())));
+    }
+    json.put("log",log);
+
     // Unter der Sperre lesen: eine laufende Aenderung (z.B. merge) teilt die JDBC-Verbindung, ihr halber Stand waere sonst sichtbar
     synchronized (Freigaben.LOCK)
     {
@@ -583,6 +610,26 @@ public class Freigabe
   public void approve() throws Exception
   {
     this.decide(true);
+  }
+
+  /**
+   * Meldet, dass die Push-Freigabe in der App bestaetigt wurde.
+   * @throws Exception
+   */
+  public void tanConfirm() throws Exception
+  {
+    try
+    {
+      this.checkRequest();
+      if (!Freigaben.confirmTan(this.request.getParameter("tan")))
+        throw new ApplicationException(i18n.tr("Die Push-Freigabe wartet nicht mehr"));
+      Logger.info("PushTAN decoupled confirmation reported in web frontend");
+      this.send(result(true,i18n.tr("Freigabe gemeldet, die Bank wird gefragt")));
+    }
+    catch (ApplicationException ae)
+    {
+      this.send(result(false,ae.getMessage()));
+    }
   }
 
   /**

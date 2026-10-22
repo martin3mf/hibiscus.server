@@ -9,4 +9,9 @@
 #set($height = "70%")
 #parse("includes/log.vm")
 
+<script type="text/javascript">
+  // System-Log alle 5 Sekunden neu laden
+  window.setTimeout(function() { window.location.reload(); }, 5000);
+</script>
+
 #parse("includes/footer.vm")

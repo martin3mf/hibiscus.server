@@ -106,6 +106,139 @@ public class Freigaben
   private static Entscheidung pending = null;
 
   /**
+   * Eine Push-Freigabe (decoupled, z.B. SecureGo plus), auf die der HBCI-Callback wartet.
+   */
+  public static class Tan
+  {
+    private final String id = UUID.randomUUID().toString();
+    private final String text;
+    private final String auftrag;
+    private final boolean retry;
+    private final long deadlineNanos;
+    private boolean confirmed = false;
+
+    private Tan(String text, String auftrag, boolean retry, int seconds)
+    {
+      this.text    = text;
+      this.auftrag = auftrag;
+      this.retry   = retry;
+      this.deadlineNanos = System.nanoTime() + seconds * 1000000000L;
+    }
+
+    /**
+     * @return die ID der Push-Freigabe.
+     */
+    public String getId()
+    {
+      return this.id;
+    }
+
+    /**
+     * @return der Text der Bank.
+     */
+    public String getText()
+    {
+      return this.text;
+    }
+
+    /**
+     * @return Beschreibung des zugehoerigen Auftrages, insofern ermittelbar.
+     */
+    public String getAuftrag()
+    {
+      return this.auftrag;
+    }
+
+    /**
+     * @return true, wenn die Bank die Freigabe nach einer frueheren Rueckfrage noch nicht hatte.
+     */
+    public boolean isRetry()
+    {
+      return this.retry;
+    }
+
+    /**
+     * @return verbleibende Wartezeit in Sekunden.
+     */
+    public long getRemaining()
+    {
+      return Math.max(0L,(this.deadlineNanos - System.nanoTime()) / 1000000000L);
+    }
+  }
+
+  private static Tan tan = null;
+
+  /**
+   * Wartet auf eine Push-Freigabe: bis zur Bestaetigung im Web-Frontend oder bis die Wartezeit ablaeuft.
+   * In beiden Faellen setzt der Callback fort und die Bank meldet, ob die Freigabe vorliegt.
+   * @param text der Text der Bank.
+   * @param auftrag Beschreibung des Auftrages.
+   * @param retry true, wenn die Bank die Freigabe noch nicht hatte.
+   * @param seconds maximale Wartezeit in Sekunden.
+   * @return true, wenn im Web-Frontend bestaetigt wurde.
+   * @throws InterruptedException
+   */
+  public static boolean awaitTan(String text, String auftrag, boolean retry, int seconds) throws InterruptedException
+  {
+    final Tan t = new Tan(text,auftrag,retry,seconds);
+    synchronized (Freigaben.class)
+    {
+      tan = t;
+    }
+    try
+    {
+      synchronized (t)
+      {
+        while (!t.confirmed)
+        {
+          long left = t.deadlineNanos - System.nanoTime();
+          if (left <= 0)
+            break;
+          t.wait(Math.max(1L,left / 1000000L));
+        }
+        return t.confirmed;
+      }
+    }
+    finally
+    {
+      synchronized (Freigaben.class)
+      {
+        if (tan == t)
+          tan = null;
+      }
+    }
+  }
+
+  /**
+   * @return die aktuell wartende Push-Freigabe oder null.
+   */
+  public static synchronized Tan getTan()
+  {
+    return tan;
+  }
+
+  /**
+   * Meldet, dass die Push-Freigabe in der App bestaetigt wurde; der Callback setzt sofort fort.
+   * @param id die ID der Push-Freigabe.
+   * @return true, wenn sie noch wartete.
+   */
+  public static boolean confirmTan(String id)
+  {
+    final Tan t = getTan();
+    if (t == null || id == null || !t.id.equals(id))
+      return false;
+    synchronized (t)
+    {
+      // Nach Fristablauf nicht mehr bestaetigen, auch wenn der Callback noch nicht wieder aufgewacht ist
+      if (t.confirmed || System.nanoTime() - t.deadlineNanos >= 0)
+        return false;
+      t.confirmed = true;
+      t.notifyAll();
+      return true;
+    }
+  }
+
+  /**
    * Prueft, ob alle Ergebnisse "nicht anwendbar" (RVNA) sind.
    * @param result das VoP-Ergebnis.
    * @return true, wenn mindestens ein Ergebnis existiert und alle RVNA sind.
