@@ -100,6 +100,23 @@ public class FreigabenTest
     lateWaiter.join(3000);
     check(!lateGot[0], "late confirmation does not flip timeout");
 
+    // Abbruch: Waiter endet sofort mit OperationCanceledException, danach ist nichts mehr bestaetigbar
+    final Throwable[] cancelGot = {null};
+    Thread cancelWaiter = new Thread(() -> { try { Freigaben.awaitTan("t","j",false,10); } catch (Throwable e) { cancelGot[0] = e; } });
+    t0 = System.currentTimeMillis();
+    cancelWaiter.start();
+    while (Freigaben.getTan() == null)
+      Thread.sleep(10);
+    final String cancelId = Freigaben.getTan().getId();
+    check(!Freigaben.cancelTan("wrong-id"), "wrong tan id cancel refused");
+    check(Freigaben.cancelTan(cancelId), "tan cancelled");
+    check(!Freigaben.confirmTan(cancelId), "confirmation after cancel refused");
+    cancelWaiter.join(2000);
+    check(!cancelWaiter.isAlive() && cancelGot[0] instanceof de.willuhn.jameica.system.OperationCanceledException, "cancel throws OperationCanceledException");
+    check(System.currentTimeMillis() - t0 < 3000, "no full wait after cancel");
+    check(Freigaben.getTan() == null, "tan cleared after cancel");
+    check(!Freigaben.cancelTan(cancelId), "second cancel refused");
+
     System.out.println("FreigabenTest: OK");
   }
 

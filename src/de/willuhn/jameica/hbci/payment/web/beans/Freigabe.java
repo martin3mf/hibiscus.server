@@ -633,6 +633,26 @@ public class Freigabe
   }
 
   /**
+   * Bricht die wartende Push-Freigabe und damit die Ausfuehrung ab.
+   * @throws Exception
+   */
+  public void tanCancel() throws Exception
+  {
+    try
+    {
+      this.checkRequest();
+      if (!Freigaben.cancelTan(this.request.getParameter("tan")))
+        throw new ApplicationException(i18n.tr("Die Push-Freigabe wartet nicht mehr"));
+      Logger.info("PushTAN decoupled cancel reported in web frontend");
+      this.send(result(true,i18n.tr("Ausf\u00fchrung abgebrochen. Falls in SecureGo plus schon freigegeben: Ums\u00e4tze und offene Bankauftr\u00e4ge pr\u00fcfen, bevor du erneut ausf\u00fchrst.")));
+    }
+    catch (ApplicationException ae)
+    {
+      this.send(result(false,ae.getMessage()));
+    }
+  }
+
+  /**
    * Lehnt die offene VoP-Entscheidung ab.
    * @throws Exception
    */

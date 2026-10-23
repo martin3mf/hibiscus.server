@@ -18,6 +18,8 @@ import org.kapott.hbci.GV_Result.GVRVoP.VoPResult;
 import org.kapott.hbci.GV_Result.GVRVoP.VoPResultItem;
 import org.kapott.hbci.GV_Result.GVRVoP.VoPStatus;
 
+import de.willuhn.jameica.system.OperationCanceledException;
+
 /**
  * Haelt die offene VoP-Entscheidung, die im Web-Frontend (freigabe.html) getroffen wird.
  * Der HBCI-Callback wartet blockierend, bis entschieden wurde oder die Wartezeit ablaeuft.
@@ -116,6 +118,7 @@ public class Freigaben
     private final boolean retry;
     private final long deadlineNanos;
     private boolean confirmed = false;
+    private boolean cancelled = false;
 
     private Tan(String text, String auftrag, boolean retry, int seconds)
     {
@@ -177,6 +180,7 @@ public class Freigaben
    * @param seconds maximale Wartezeit in Sekunden.
    * @return true, wenn im Web-Frontend bestaetigt wurde.
    * @throws InterruptedException
+   * @throws OperationCanceledException wenn im Web-Frontend abgebrochen wurde.
    */
   public static boolean awaitTan(String text, String auftrag, boolean retry, int seconds) throws InterruptedException
   {
@@ -189,13 +193,15 @@ public class Freigaben
     {
       synchronized (t)
       {
-        while (!t.confirmed)
+        while (!t.confirmed && !t.cancelled)
         {
           long left = t.deadlineNanos - System.nanoTime();
           if (left <= 0)
             break;
           t.wait(Math.max(1L,left / 1000000L));
         }
+        if (t.cancelled)
+          throw new OperationCanceledException("PushTAN cancelled in web frontend");
         return t.confirmed;
       }
     }
@@ -224,15 +230,33 @@ public class Freigaben
    */
   public static boolean confirmTan(String id)
   {
+    return finishTan(id,false);
+  }
+
+  /**
+   * Bricht die wartende Push-Freigabe ab; der Callback bricht die Ausfuehrung ab.
+   * @param id die ID der Push-Freigabe.
+   * @return true, wenn sie noch wartete.
+   */
+  public static boolean cancelTan(String id)
+  {
+    return finishTan(id,true);
+  }
+
+  private static boolean finishTan(String id, boolean cancel)
+  {
     final Tan t = getTan();
     if (t == null || id == null || !t.id.equals(id))
       return false;
     synchronized (t)
     {
       // Nach Fristablauf nicht mehr bestaetigen, auch wenn der Callback noch nicht wieder aufgewacht ist
-      if (t.confirmed || System.nanoTime() - t.deadlineNanos >= 0)
+      if (t.confirmed || t.cancelled || System.nanoTime() - t.deadlineNanos >= 0)
         return false;
-      t.confirmed = true;
+      if (cancel)
+        t.cancelled = true;
+      else
+        t.confirmed = true;
       t.notifyAll();
       return true;
     }

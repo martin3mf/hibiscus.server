@@ -47,6 +47,7 @@ import de.willuhn.jameica.hbci.synchronize.SynchronizeSession;
 import de.willuhn.jameica.hbci.synchronize.hbci.HBCISynchronizeBackend;
 import de.willuhn.jameica.services.BeanService;
 import de.willuhn.jameica.system.Application;
+import de.willuhn.jameica.system.OperationCanceledException;
 import de.willuhn.logging.Logger;
 
 /**
@@ -399,6 +400,14 @@ public class HBCICallbackServer extends AbstractHibiscusHBCICallback
     catch (InterruptedException e)
     {
       Logger.error("interrupted",e);
+    }
+    catch (OperationCanceledException oce)
+    {
+      Logger.warn("PushTAN decoupled confirmation cancelled in web frontend: " + auftrag);
+      final SynchronizeSession session = this.backend.getCurrentSession();
+      if (session != null)
+        session.cancel();
+      throw oce;
     }
   }
 

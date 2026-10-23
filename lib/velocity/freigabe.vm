@@ -40,7 +40,8 @@
     <p id="tan-auftrag"></p>
     <p id="tan-text" style="white-space:pre-wrap"></p>
     <p>Der Server wartet noch <b id="tan-remaining"></b> Sekunden und fragt dann die Bank.</p>
-    <div id="tan-buttons"></div>
+    <div id="tan-buttons" style="margin-top:20px"></div>
+    <p style="font-size:0.9em">Enter = weiter</p>
   </div>
 </div>
 
@@ -328,10 +329,26 @@ var freigabe = (function()
       {
         var id = t.id;
         var b = document.createElement("button");
-        b.type = "button";
+        var c = document.createElement("button");
+        b.id = "tan-confirm";
+        b.type = c.type = "button";
+        b.style.cssText = "font-size:1.4em;padding:12px 24px;font-weight:bold";
+        c.style.cssText = "font-size:1.4em;padding:12px 24px;margin-left:20px";
         b.textContent = "In SecureGo plus freigegeben \u2013 weiter";
-        b.onclick = function() { b.disabled = true; post([["action", "tanConfirm"], ["tan", id]]).then(function(ok) { if (!ok) b.disabled = false; }); };
+        c.textContent = "Abbrechen";
+        b.onclick = function() { b.disabled = c.disabled = true; post([["action", "tanConfirm"], ["tan", id]]).then(function(ok) { if (!ok) b.disabled = c.disabled = false; }); };
+        c.onclick = function()
+        {
+          if (!window.confirm("Ausf\u00fchrung abbrechen?\n\nNur abbrechen, wenn du den Auftrag in SecureGo plus NICHT freigegeben hast. " +
+                              "Hast du ihn freigegeben, ist offen, ob die Bank ihn ausf\u00fchrt; Hibiscus zeigt ihn weiter als offen. " +
+                              "Dann vor einem neuen Versuch die Ums\u00e4tze und die offenen und terminierten Auftr\u00e4ge bei der Bank pr\u00fcfen, sonst droht eine doppelte Zahlung."))
+            return;
+          b.disabled = c.disabled = true;
+          post([["action", "tanCancel"], ["tan", id]]).then(function(ok) { if (!ok) b.disabled = c.disabled = false; });
+        };
         buttons.appendChild(b);
+        buttons.appendChild(c);
+        b.focus();
       }
     }
     if (t)
@@ -432,6 +449,21 @@ var freigabe = (function()
 
   refresh(true);
   window.setInterval(refresh, 3000);
+  // Push-Freigabe-Fenster: Enter heisst immer "weiter", Tab bleibt im Fenster (Abbrechen nur per Klick oder Leertaste)
+  document.addEventListener("keydown", function(e)
+  {
+    if (!tanId || (e.key != "Enter" && e.key != "Tab"))
+      return;
+    e.preventDefault();
+    var buttons = el("tan-buttons").querySelectorAll("button");
+    if (e.key == "Tab")
+    {
+      buttons[document.activeElement === buttons[0] ? 1 : 0].focus();
+      return;
+    }
+    if (!buttons[0].disabled)
+      buttons[0].click();
+  });
   // Countdown zwischen zwei Statusabfragen weiterzaehlen
   window.setInterval(function()
   {
